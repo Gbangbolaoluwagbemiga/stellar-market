@@ -67,7 +67,10 @@ afterEach(() => jest.clearAllMocks());
 
 beforeEach(() => {
   // ensure auth middleware finds a user record by default
-  prismaMock.user.findUnique.mockResolvedValue({ id: USER_TEST_ID, role: "FREELANCER" });
+  prismaMock.user.findUnique.mockResolvedValue({
+    id: USER_TEST_ID,
+    role: "FREELANCER",
+  });
 });
 
 describe("DELETE /api/notifications/:id", () => {
