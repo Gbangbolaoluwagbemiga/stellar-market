@@ -163,7 +163,6 @@ export default function JobReviewPage() {
           isOpen={modalOpen}
           onClose={() => setModalOpen(false)}
           onSuccess={() => {
-            setModalOpen(false);
             fetchData();
           }}
         />

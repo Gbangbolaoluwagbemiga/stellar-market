@@ -1097,7 +1097,6 @@ export default function JobDetailPage() {
             setReviewModalOpen(false);
           }}
           onSuccess={() => {
-            setReviewModalOpen(false);
             fetchJob();
           }}
         />
