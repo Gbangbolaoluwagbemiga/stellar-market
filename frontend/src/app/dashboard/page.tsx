@@ -15,15 +15,12 @@ import {
   Clock,
   CheckCircle2,
   Trash2,
-  CheckCircle2,
-  Clock,
   Send,
   XCircle,
   Eye,
   ChevronRight,
 } from "lucide-react";
 import axios from "axios";
-import Link from "next/link";
 import {
   BarChart,
   Bar,

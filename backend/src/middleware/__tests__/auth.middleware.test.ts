@@ -42,7 +42,7 @@ describe("authenticate middleware", () => {
     } as AuthRequest;
 
     (jwt.verify as jest.Mock).mockReturnValue({ userId: "user-123" });
-    prismaMock.user.findUnique.mockResolvedValue({ role: UserRole.CLIENT });
+    prismaMock.user.findUnique.mockResolvedValue({ role: UserRole.CLIENT, emailVerified: true });
 
     await authenticate(req, res, next);
 
