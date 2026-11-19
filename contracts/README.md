@@ -65,11 +65,12 @@ Create a local env file:
 cp contracts/.env.example contracts/.env
 ```
 
-Required variables:
+Required variables for deployment scripts:
 
 - `STELLAR_NETWORK` - network name configured in Stellar CLI (for example `testnet`)
 - `SOURCE_ACCOUNT` - CLI identity/account used for deployments and invokes
-- `TOKEN_ADDRESS` - token contract address used in escrow/reputation flows
+
+`TOKEN_ADDRESS` is only needed for the escrow/reputation invoke examples below; the deploy scripts do not use it.
 
 ## Deploy Contracts
 
@@ -86,8 +87,9 @@ Each script:
 1. Loads env from `contracts/.env` (if present)
 2. Validates required variables
 3. Builds the target wasm
-4. Runs `stellar contract deploy`
-5. Prints deployed contract ID
+4. Runs `stellar contract optimize` on the built wasm
+5. Runs `stellar contract deploy` with the optimized wasm
+6. Prints deployed contract ID
 
 After deployment, record IDs in `contracts/ADDRESSES.md`.
 
