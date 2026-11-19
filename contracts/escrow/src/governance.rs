@@ -557,11 +557,10 @@ impl EscrowContract {
 
         require_open_for_voting(&env, &proposal)?;
 
-        // An account that delegated its weight away cannot also vote directly.
-        if let Some(delegate) = get_delegate_internal(&env, &voter) {
-            if delegate != voter {
-                return Err(GovError::DelegatedAway);
-            }
+        // `delegate()` removes the storage entry for self-delegation, so any
+        // stored delegate is necessarily a true delegation away from the voter.
+        if get_delegate_internal(&env, &voter).is_some() {
+            return Err(GovError::DelegatedAway);
         }
         if env
             .storage()
