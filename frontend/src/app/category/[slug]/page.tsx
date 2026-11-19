@@ -1,16 +1,7 @@
 import { Metadata } from "next";
 import { notFound } from "next/navigation";
 import CategoryClient from "./CategoryClient";
-
-const VALID_CATEGORIES = [
-  "Frontend",
-  "Backend",
-  "Smart Contract",
-  "Design",
-  "Mobile",
-  "Documentation",
-  "DevOps",
-] as const;
+import { JOB_CATEGORIES, categoryToSlug } from "@/constants/jobs";
 
 const CATEGORY_DESCRIPTIONS: Record<string, string> = {
   Frontend:
@@ -30,15 +21,15 @@ const CATEGORY_DESCRIPTIONS: Record<string, string> = {
 };
 
 function slugToCategory(slug: string): string | null {
-  const category = VALID_CATEGORIES.find(
-    (cat) => cat.toLowerCase().replace(/\s+/g, "-") === slug.toLowerCase(),
+  const category = JOB_CATEGORIES.find(
+    (cat) => categoryToSlug(cat) === slug.toLowerCase(),
   );
   return category ?? null;
 }
 
 export async function generateStaticParams() {
-  return VALID_CATEGORIES.map((category) => ({
-    slug: category.toLowerCase().replace(/\s+/g, "-"),
+  return JOB_CATEGORIES.map((category) => ({
+    slug: categoryToSlug(category),
   }));
 }
 
