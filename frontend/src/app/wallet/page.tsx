@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import axios from "axios";
 import {
@@ -276,7 +276,6 @@ export default function WalletPage() {
   };
 
   const summary = analytics?.summary;
-  const visibleTransactions = useMemo(() => transactions, [transactions]);
 
   if (!token) {
     return (
@@ -536,8 +535,8 @@ export default function WalletPage() {
                     Transaction history
                   </h2>
                   <p className="text-sm text-theme-text">
-                    {visibleTransactions.length} transaction
-                    {visibleTransactions.length === 1 ? "" : "s"} on this page
+                    {transactions.length} transaction
+                    {transactions.length === 1 ? "" : "s"} on this page
                   </p>
                 </div>
                 {loading && (
@@ -552,7 +551,7 @@ export default function WalletPage() {
                   <TransactionRowSkeleton key={index} />
                 ))}
               </div>
-            ) : loading ? null : visibleTransactions.length === 0 ? (
+            ) : loading ? null : transactions.length === 0 ? (
               <div className="px-5 py-16 text-center">
                 <Wallet size={40} className="mx-auto mb-4 text-theme-text" />
                 <h3 className="text-lg font-semibold text-theme-heading">
@@ -565,7 +564,7 @@ export default function WalletPage() {
               </div>
             ) : (
               <div className="divide-y divide-theme-border">
-                {visibleTransactions.map((tx) => {
+                {transactions.map((tx) => {
                   const counterparty = tx.counterparty?.username || shorten(
                     tx.direction === "incoming" ? tx.fromAddress : tx.toAddress,
                   );
