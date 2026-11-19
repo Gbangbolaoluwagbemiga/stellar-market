@@ -10,7 +10,7 @@ if [[ -f "${CONTRACTS_DIR}/.env" ]]; then
   source "${CONTRACTS_DIR}/.env"
 fi
 
-required_vars=(STELLAR_NETWORK SOURCE_ACCOUNT TOKEN_ADDRESS)
+required_vars=(STELLAR_NETWORK SOURCE_ACCOUNT)
 for var_name in "${required_vars[@]}"; do
   if [[ -z "${!var_name:-}" ]]; then
     echo "Error: ${var_name} is required. Set it in contracts/.env or your shell."
@@ -34,10 +34,22 @@ if [[ ! -f "${WASM_PATH}" ]]; then
   exit 1
 fi
 
+echo "Optimizing dispute contract wasm..."
+OPTIMIZED_WASM_PATH="${WASM_PATH%.wasm}.optimized.wasm"
+rm -f "${OPTIMIZED_WASM_PATH}"
+stellar contract optimize \
+  --wasm "${WASM_PATH}" \
+  --wasm-out "${OPTIMIZED_WASM_PATH}"
+
+if [[ ! -f "${OPTIMIZED_WASM_PATH}" ]]; then
+  echo "Error: optimized wasm artifact not found at ${OPTIMIZED_WASM_PATH}"
+  exit 1
+fi
+
 echo "Deploying dispute contract to network '${STELLAR_NETWORK}'..."
 CONTRACT_ID="$(
   stellar contract deploy \
-    --wasm "${WASM_PATH}" \
+    --wasm "${OPTIMIZED_WASM_PATH}" \
     --source-account "${SOURCE_ACCOUNT}" \
     --network "${STELLAR_NETWORK}"
 )"
