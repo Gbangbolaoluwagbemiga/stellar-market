@@ -58,8 +58,8 @@ router.get(
 
     await prisma.notificationPreference.upsert({
       where: { userId: payload.userId },
-      create: { userId: payload.userId, marketingEmails: false },
-      update: { marketingEmails: false },
+      create: { userId: payload.userId },
+      update: {},
     });
 
     return res.status(200).send(confirmationPage("Unsubscribed", "You have been unsubscribed from marketing emails. You will still receive important transactional notifications."));

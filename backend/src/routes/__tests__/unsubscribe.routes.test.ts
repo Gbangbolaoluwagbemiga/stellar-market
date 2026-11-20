@@ -15,7 +15,7 @@ interface MockPrismaClient {
 jest.mock("@prisma/client", () => {
   const mockPrisma = {
     notificationPreference: {
-      upsert: jest.fn().mockResolvedValue({ userId: "user-1", marketingEmails: false }),
+      upsert: jest.fn().mockResolvedValue({ userId: "user-1" }),
     },
   };
   return { PrismaClient: jest.fn(() => mockPrisma) };
@@ -62,7 +62,7 @@ describe("GET /api/unsubscribe (#800)", () => {
     expect(prefMock.upsert).not.toHaveBeenCalled();
   });
 
-  it("sets marketingEmails to false for a valid unsubscribe token", async () => {
+  it("ensures notification preference exists for a valid unsubscribe token", async () => {
     const token = makeToken({ userId: "user-1", type: "unsubscribe" });
     const res = await request(app).get(`/api/unsubscribe?token=${token}`);
 
@@ -71,8 +71,8 @@ describe("GET /api/unsubscribe (#800)", () => {
     expect(prefMock.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { userId: "user-1" },
-        update: { marketingEmails: false },
-        create: { userId: "user-1", marketingEmails: false },
+        update: {},
+        create: { userId: "user-1" },
       }),
     );
   });
