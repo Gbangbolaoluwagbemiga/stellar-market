@@ -317,9 +317,10 @@ model Application {
   createdAt         DateTime          @default(now())
 
   job        Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  freelancer User @relation(fields: [freelancerId], references: [id])
+  freelancer User @relation(fields: [freelancerId], references: [id], onDelete: Cascade)
 
   @@unique([jobId, freelancerId])
+  @@index([freelancerId, createdAt(sort: Desc)])
 }
 
 model Invitation {
@@ -372,6 +373,8 @@ model Review {
   reviewee User @relation("ReviewsReceived", fields: [revieweeId], references: [id])
 
   @@unique([jobId, reviewerId])
+  @@index([reviewerId])
+  @@index([revieweeId])
 }
 
 model Transaction {
