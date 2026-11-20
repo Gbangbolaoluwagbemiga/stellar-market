@@ -2191,6 +2191,14 @@ impl ReputationContract {
             .unwrap_or(0)
     }
 
+    /// Returns the stake-adjusted average rating for `user` on a **0–10,000** scale.
+    ///
+    /// The base score is the time-decayed weighted mean of all reviews, normalised
+    /// to 0–10,000. That base is then multiplied by the user's stake multiplier
+    /// (see [`Self::get_stake_multiplier`]) and capped at 10,000.
+    ///
+    /// Returns `Ok(0)` when every review has fully decayed (total weight == 0),
+    /// treating the user as though they have no reputation.
     pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
         let multiplier = Self::get_stake_multiplier(env.clone(), user.clone());
 
@@ -2792,6 +2800,10 @@ impl ReputationContract {
         staked_at.saturating_add(STAKE_LOCKUP_SECONDS)
     }
 
+    /// Look up an existing review appeal by its composite key `(reviewer, reviewee, job_id)`.
+    ///
+    /// Returns `Err(AppealNotFound)` if no appeal has been filed for that
+    /// `(reviewer, reviewee, job_id)` triple.
     pub fn get_review_appeal(
         env: Env,
         reviewer: Address,
