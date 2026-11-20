@@ -205,7 +205,6 @@ model NotificationPreference {
   emailMilestoneApproved   Boolean @default(true)
   emailPaymentReleased     Boolean @default(true)
   emailApplicationAccepted Boolean @default(true)
-  marketingEmails          Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -257,6 +256,7 @@ model Job {
   @@index([clientId])
   @@index([freelancerId])
   @@index([paymentToken])
+  @@index([category])
   @@index([status, createdAt(sort: Desc)])
 }
 
@@ -352,6 +352,10 @@ model Message {
   sender   User @relation("SentMessages", fields: [senderId], references: [id])
   receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
   job      Job? @relation(fields: [jobId], references: [id])
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([jobId])
 }
 
 model Review {
