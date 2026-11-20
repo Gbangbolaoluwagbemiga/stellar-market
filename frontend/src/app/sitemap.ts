@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { JOB_CATEGORIES, categoryToSlug } from "@/constants/jobs";
 
 const SERVICE_CATEGORIES = [
   "frontend",
@@ -46,6 +47,15 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     }),
   );
 
+  const jobCategoryPages: MetadataRoute.Sitemap = JOB_CATEGORIES.map(
+    (category) => ({
+      url: `${baseUrl}/category/${categoryToSlug(category)}`,
+      lastModified: new Date(),
+      changeFrequency: "daily" as const,
+      priority: 0.85,
+    }),
+  );
+
   const usernames = await getPublicFreelancerUsernames();
   const profileRoutes: MetadataRoute.Sitemap = usernames.map((username) => ({
     url: `${baseUrl}/u/${encodeURIComponent(username)}`,
@@ -54,5 +64,10 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     priority: 0.7,
   }));
 
-  return [...staticPages, ...categoryPages, ...profileRoutes];
+  return [
+    ...staticPages,
+    ...categoryPages,
+    ...jobCategoryPages,
+    ...profileRoutes,
+  ];
 }

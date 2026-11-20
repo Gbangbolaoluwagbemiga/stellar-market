@@ -8,6 +8,11 @@ export const JOB_CATEGORIES = [
   "DevOps",
 ] as const;
 
+/** URL slug for a job category, e.g. "Smart Contract" -> "smart-contract". */
+export function categoryToSlug(name: string): string {
+  return name.toLowerCase().replace(/\s+/g, "-");
+}
+
 export const PAYMENT_TOKENS = ["XLM", "USDC"] as const;
 
 export type PaymentToken = (typeof PAYMENT_TOKENS)[number];
