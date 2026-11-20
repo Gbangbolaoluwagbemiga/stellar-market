@@ -32,6 +32,7 @@ mod mock_reputation {
         pub total_score: u64,
         pub total_weight: u64,
         pub review_count: u32,
+        pub last_updated_ts: u32,
     }
 
     #[contract]
@@ -48,6 +49,7 @@ mod mock_reputation {
                 total_score: 500,
                 total_weight: 10,
                 review_count: 5,
+                last_updated_ts: 0,
             })
         }
     }
@@ -66,7 +68,7 @@ fn create_token_contract<'a>(env: &Env, admin: &Address) -> (Address, TokenClien
 }
 
 /// Test helper to mint tokens to a user
-fn mint_tokens(env: &Env, token: &Address, _admin: &Address, to: &Address, amount: i128) {
+fn mint_tokens(env: &Env, token: &Address, to: &Address, amount: i128) {
     let token_admin_client = StellarAssetClient::new(env, token);
     token_admin_client.mint(to, &amount);
 }
@@ -90,8 +92,8 @@ fn test_happy_path_job_completion_with_reputation() {
 
     // Create and fund token
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+    mint_tokens(&env, &token_address, &client, 100_000_000);
+    mint_tokens(&env, &token_address, &freelancer, 100_000_000);
 
     // Initialize reputation contract with multi-sig
     let signers = Vec::from_array(&env, [admin.clone()]);
@@ -203,7 +205,6 @@ fn test_happy_path_job_completion_with_reputation() {
 }
 
 #[test]
-#[ignore]
 fn test_dispute_resolved_for_freelancer() {
     let env = Env::default();
     env.mock_all_auths();
@@ -224,8 +225,8 @@ fn test_dispute_resolved_for_freelancer() {
 
     // Create and fund token
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+    mint_tokens(&env, &token_address, &client, 100_000_000);
+    mint_tokens(&env, &token_address, &freelancer, 100_000_000);
 
     // Initialize dispute contract with mock reputation
     dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);
@@ -313,7 +314,6 @@ fn test_dispute_resolved_for_freelancer() {
 }
 
 #[test]
-#[ignore]
 fn test_dispute_resolved_for_client() {
     let env = Env::default();
     env.mock_all_auths();
@@ -334,8 +334,8 @@ fn test_dispute_resolved_for_client() {
 
     // Create and fund token
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+    mint_tokens(&env, &token_address, &client, 100_000_000);
+    mint_tokens(&env, &token_address, &freelancer, 100_000_000);
 
     // Initialize dispute contract with mock reputation
     dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);
@@ -399,7 +399,6 @@ fn test_dispute_resolved_for_client() {
         &VoteChoice::Freelancer,
         &String::from_str(&env, "Looks ok to me"), &0);
 
-    // First resolution — not final yet (max_appeals=2, appeal_count=0).
     // Resolution is final in reputation-based voting (no appeals)
     let result = dispute_client.resolve_dispute(&dispute_id_val);
     assert_eq!(result, DisputeStatus::ResolvedForClient);
@@ -430,8 +429,8 @@ fn test_full_workflow_with_partial_completion_and_cancellation() {
 
     // Create and fund token
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+    mint_tokens(&env, &token_address, &client, 100_000_000);
+    mint_tokens(&env, &token_address, &freelancer, 100_000_000);
 
     // Create job with 3 milestones
     let milestones = vec![
@@ -488,9 +487,9 @@ fn test_multiple_jobs_with_reputation_accumulation() {
 
     // Create and fund token
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client1, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &client2, 100_000_000);
-    mint_tokens(&env, &token_address, &admin, &freelancer, 100_000_000);
+    mint_tokens(&env, &token_address, &client1, 100_000_000);
+    mint_tokens(&env, &token_address, &client2, 100_000_000);
+    mint_tokens(&env, &token_address, &freelancer, 100_000_000);
 
     // Initialize reputation contract with multi-sig
     let signers = Vec::from_array(&env, [admin.clone()]);
@@ -568,7 +567,6 @@ fn test_multiple_jobs_with_reputation_accumulation() {
 }
 
 #[test]
-#[ignore]
 fn test_dispute_with_all_milestones_approved() {
     let env = Env::default();
     env.mock_all_auths();
@@ -586,7 +584,7 @@ fn test_dispute_with_all_milestones_approved() {
     let admin = Address::generate(&env);
 
     let (token_address, token) = create_token_contract(&env, &admin);
-    mint_tokens(&env, &token_address, &admin, &client, 10_000);
+    mint_tokens(&env, &token_address, &client, 10_000);
 
     // Initialize dispute contract with mock reputation
     dispute_client.initialize(&admin, &mock_rep_id, &0, &escrow_id);

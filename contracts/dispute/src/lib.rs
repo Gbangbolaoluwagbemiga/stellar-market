@@ -596,6 +596,15 @@ mod escrow {
         pub amount: i128,
         pub status: MilestoneStatus,
         pub deadline: u64,
+        pub token: Option<Address>,
+    }
+
+    #[contracttype]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub struct TokenBalance {
+        pub token: Address,
+        pub total_amount: i128,
+        pub funded_amount: i128,
     }
 
     #[contracttype]
@@ -611,6 +620,8 @@ mod escrow {
         pub milestones: Vec<Milestone>,
         pub job_deadline: u64,
         pub auto_refund_after: u64,
+        pub expiry_ledger: u32,
+        pub token_balances: Vec<TokenBalance>,
     }
 }
 
