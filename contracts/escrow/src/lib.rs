@@ -2075,8 +2075,8 @@ impl EscrowContract {
     ///
     /// For multi-token jobs (created via `create_multi_token_job`), this function
     /// automatically collects all non-default token amounts in addition to the default
-    /// token. Oracle validation applies to the default token only; use
-    /// `validate_token_value` separately for non-default tokens if required.
+    /// token. Oracle validation applies to the default token only; non-default token
+    /// amounts are currently not value-validated.
     pub fn fund_job(
         env: Env,
         job_id: u64,
@@ -2362,7 +2362,9 @@ impl EscrowContract {
 
     /// Pure payout breakdown for a dispute resolution. No state is read or
     /// written — safe for frontend preview without a transaction.
-    /// All four amounts always sum to `escrow_amount` (no dust).
+    /// All four amounts sum to `escrow_amount` (no dust) for every outcome
+    /// except [`DisputeResolution::Escalate`], which returns an all-zero
+    /// breakdown since it settles nothing.
     pub fn calculate_payout(
         _env: Env,
         escrow_amount: i128,
@@ -4369,6 +4371,7 @@ impl EscrowContract {
     /// # Arguments
     /// * `job_id` — The job to query
     pub fn get_revision_proposal(env: Env, job_id: u64) -> Option<RevisionProposal> {
+        bump_escrow_ttl(&env, job_id);
         env.storage()
             .persistent()
             .get::<DataKey, RevisionProposal>(&DataKey::RevisionProposal(job_id))
@@ -4392,6 +4395,7 @@ impl EscrowContract {
     /// - Transparency for both parties to see how scope evolved
     /// - Historical record for compliance and reporting
     pub fn get_revision_history(env: Env, job_id: u64) -> Vec<MilestoneRevision> {
+        bump_escrow_ttl(&env, job_id);
         env.storage()
             .persistent()
             .get(&DataKey::RevisionHistory(job_id))
