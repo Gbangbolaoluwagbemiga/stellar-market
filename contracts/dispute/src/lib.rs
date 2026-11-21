@@ -81,12 +81,24 @@ pub enum DisputeStatus {
     ResolutionFailed,
 }
 
+/// How an exact vote tie is broken when arbitrators are split evenly.
+///
+/// This enum is consulted **only when the vote tally is an exact tie**;
+/// when one side has more votes it has no effect. The variant names mirror
+/// some [`DisputeResolution`] variants but carry different semantics — see
+/// each variant's doc for the distinction.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TieBreakMethod {
+    /// Award the tied dispute in favour of the freelancer.
     FavorFreelancer,
+    /// Award the tied dispute in favour of the client.
     FavorClient,
+    /// Unlike [`DisputeResolution::Escalate`], which escalates from the
+    /// normal resolution path to an appeal panel, this variant escalates
+    /// a *tied appeal* to a higher governance body or admin-level review.
     Escalate,
+    /// Refund both parties equally, treating the tie as indeterminate.
     RefundBoth,
 }
 
@@ -489,6 +501,14 @@ fn bump_evidence_ttl(env: &Env, dispute_id: u64) {
     );
 }
 
+/// Issue #1809: TTL-bump helper for the Voters tracking key.
+fn bump_voters_ttl(env: &Env, dispute_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Voters(dispute_id),
+        MIN_TTL_THRESHOLD,
+        MIN_TTL_EXTEND_TO,
+    );
+}
 fn bump_pending_resolution_ttl(env: &Env, dispute_id: u64) {
     env.storage().persistent().extend_ttl(
         &DataKey::PendingResolution(dispute_id),
@@ -1192,6 +1212,7 @@ impl DisputeContract {
         env.storage()
             .persistent()
             .set(&DataKey::Voters(dispute_id), &voters);
+        bump_voters_ttl(&env, dispute_id); // Issue #1809
 
         // Record vote
         let vote = Vote {
@@ -2030,10 +2051,15 @@ impl DisputeContract {
 
     /// Get all arbitrators (voters) who have voted on a dispute.
     pub fn get_arbitrators(env: Env, dispute_id: u64) -> Vec<Address> {
-        env.storage()
+        let voters = env
+            .storage()
             .persistent()
             .get(&DataKey::Voters(dispute_id))
-            .unwrap_or(Vec::<Address>::new(&env))
+            .unwrap_or(Vec::<Address>::new(&env));
+        if !voters.is_empty() {
+            bump_voters_ttl(&env, dispute_id); // Issue #1809
+        }
+        voters
     }
 
     /// Get the assigned arbitrators for a dispute (those assigned via assign_arbitrators).
@@ -2080,6 +2106,28 @@ impl DisputeContract {
             .instance()
             .get(&DataKey::DisputeCount)
             .unwrap_or(0)
+    }
+
+    /// Issue #1810: Get total appeal count — the appeal-side counterpart of
+    /// `get_dispute_count`. Lets a UI enumerate all appeals from `1..=get_appeal_count()`
+    /// without iterating and catching not-found errors.
+    pub fn get_appeal_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AppealCount)
+            .unwrap_or(0)
+    }
+
+    /// Issue #1811: Get the configured reputation-slash basis points.
+    ///
+    /// Returns the value set during `initialize` (or by governance), falling
+    /// back to the same default used internally. Lets a UI display "losing a
+    /// dispute slashes N% of reputation" without hardcoding the default.
+    pub fn get_reputation_slash_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationSlashBps)
+            .unwrap_or(DEFAULT_REPUTATION_SLASH_BPS)
     }
 
     /// Delegate vote rights for a specific job's dispute to another address.
