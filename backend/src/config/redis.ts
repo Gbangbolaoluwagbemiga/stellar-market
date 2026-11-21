@@ -4,6 +4,7 @@ import { logger } from "../lib/logger";
 const REDIS_URL = process.env.REDIS_URL || "redis://localhost:6379";
 
 let redis: Redis | null = null;
+let connecting: Redis | null = null;
 
 /**
  * Returns the Redis client singleton.
@@ -12,9 +13,10 @@ let redis: Redis | null = null;
  */
 export function getRedisClient(): Redis | null {
   if (redis) return redis;
+  if (connecting) return connecting;
 
   try {
-    redis = new Redis(REDIS_URL, {
+    const client = new Redis(REDIS_URL, {
       maxRetriesPerRequest: 1,
       lazyConnect: true,
       retryStrategy(times) {
@@ -22,17 +24,22 @@ export function getRedisClient(): Redis | null {
         return Math.min(times * 200, 2000);
       },
     });
+    connecting = client;
 
-    redis.on("error", (err) => {
+    client.on("error", (err) => {
       logger.warn({ err }, "Redis connection error (caching disabled)");
     });
 
-    redis.connect().catch(() => {
-      // Silently fail — caching is optional
-      redis = null;
+    client.connect().then(() => {
+      redis = client;
+      connecting = null;
+    }).catch(() => {
+      // Connection failed — close it so no abandoned socket/timers linger
+      client.disconnect();
+      connecting = null;
     });
 
-    return redis;
+    return client;
   } catch {
     return null;
   }
