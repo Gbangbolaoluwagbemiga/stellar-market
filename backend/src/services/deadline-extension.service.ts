@@ -395,6 +395,13 @@ export class DeadlineExtensionService {
       );
     }
 
+    if (extensionRequest.status !== "APPROVED_BY_BOTH") {
+      throw createError(
+        `Cannot confirm a transaction for an extension request with status: ${extensionRequest.status}`,
+        400,
+      );
+    }
+
     // Update milestone deadline
     await prisma.milestone.update({
       where: { id: extensionRequest.milestoneId },
