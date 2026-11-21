@@ -843,9 +843,6 @@ fn test_get_reputation_with_decay() {
     let token_addr = create_token(&env, &token_admin);
     mint(&env, &token_addr, &token_admin, &reviewer, 100_000_000);
 
-    // Configure the token used for stake transfers via admin action.
-    reputation_client.propose_admin_action(&admin, &AdminAction::SetToken(token_addr.clone()));
-
     setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
 
     // Initial review at t=0
@@ -3136,7 +3133,6 @@ fn test_stake_weight_decay_saturates_large_values() {
     let token_addr = create_token(&env, &token_admin);
     
     mint(&env, &token_addr, &token_admin, &reviewer, i128::MAX);
-    reputation_client.propose_admin_action(&admin, &AdminAction::SetToken(token_addr.clone()));
 
     setup_completed_job(&env, &escrow_id, 1u64, &reviewer, &reviewee, &token_addr);
 
