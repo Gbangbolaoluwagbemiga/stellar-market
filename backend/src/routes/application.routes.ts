@@ -6,6 +6,7 @@ import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
 import { RecommendationService } from "../services/recommendation.service";
+import { invalidateJobAuthCache } from "../socket/yjsServer";
 import {
   createApplicationSchema,
   updateApplicationSchema,
@@ -244,6 +245,8 @@ router.put(
           status: "IN_PROGRESS",
         },
       });
+
+      invalidateJobAuthCache(application.jobId);
 
       
 

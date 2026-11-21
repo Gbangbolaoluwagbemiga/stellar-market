@@ -75,7 +75,12 @@ jest.mock("../../lib/token-version", () => ({
   invalidateTokenVersionCache: jest.fn().mockResolvedValue(undefined),
 }));
 
+jest.mock("../../socket/yjsServer", () => ({
+  invalidateJobAuthCache: jest.fn(),
+}));
+
 import { PrismaClient } from "@prisma/client";
+import { invalidateJobAuthCache } from "../../socket/yjsServer";
 const prismaMock = new PrismaClient() as unknown as MockPrismaClient;
 const jobMock = prismaMock.job;
 const applicationMock = prismaMock.application;
@@ -291,6 +296,32 @@ describe("POST /api/jobs/:jobId/apply — wallet verification (#801)", () => {
     expect(res.status).toBe(404);
     expect(res.body.code).toBeUndefined();
     expect(jobMock.findUnique).toHaveBeenCalled();
+  });
+});
+
+describe("PUT /api/applications/:id/status", () => {
+  it("invalidates the Yjs auth cache after accepting an application", async () => {
+    const applicationId = "00000000-0000-4000-8000-000000000201";
+    const freelancerId = "00000000-0000-4000-8000-000000000300";
+    const application = {
+      id: applicationId,
+      jobId: JOB_ID,
+      freelancerId,
+      job: { clientId: CLIENT_A_ID, title: "Test job" },
+    };
+
+    applicationMock.findUnique.mockResolvedValueOnce(application);
+    applicationMock.update.mockResolvedValueOnce({ ...application, status: "ACCEPTED" });
+    applicationMock.findMany.mockResolvedValueOnce([]);
+    jobMock.update.mockResolvedValueOnce({});
+
+    const res = await request(app)
+      .put(`/api/applications/${applicationId}/status`)
+      .set(authHeader(CLIENT_A_ID))
+      .send({ status: "ACCEPTED" });
+
+    expect(res.status).toBe(200);
+    expect(invalidateJobAuthCache).toHaveBeenCalledWith(JOB_ID);
   });
 });
 
