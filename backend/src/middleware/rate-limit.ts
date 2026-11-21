@@ -62,6 +62,11 @@ export const globalRateLimiter = rateLimit({
   legacyHeaders: false,
   store: globalStore,
   passOnStoreError: true,
+  keyGenerator: (req: Request) => {
+    // Normalize IPv6-mapped IPv4 (::ffff:x.x.x.x) to avoid dual-stack bypass
+    return (req.ip ?? req.socket?.remoteAddress ?? "unknown").replace(/^::ffff:/i, "");
+  },
+  validate: { ip: false }, // IP is normalized in keyGenerator above
   handler: sendTooManyRequests,
 });
 
