@@ -193,7 +193,7 @@ export class EmailService {
         await sendViaBrevo(params);
       } else {
         await transporter.sendMail({
-          from: config.smtp.from,
+          from: `"${config.email.fromName}" <${config.email.fromAddress}>`,
           to: params.to,
           subject: params.subject,
           html: params.html,
