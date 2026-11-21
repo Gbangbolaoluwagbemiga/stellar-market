@@ -79,11 +79,12 @@ async function getLastIndexedLedger(): Promise<number> {
   return row.lastIndexedLedger;
 }
 
-async function setLastIndexedLedger(ledger: number): Promise<void> {
+async function setLastIndexedLedger(ledger: number, isRealEvent = false): Promise<void> {
+  const eventFields = isRealEvent ? { lastEventAt: new Date() } : {};
   await prisma.syncState.upsert({
     where: { id: SYNC_STATE_ID },
-    update: { lastIndexedLedger: ledger },
-    create: { id: SYNC_STATE_ID, lastIndexedLedger: ledger },
+    update: { lastIndexedLedger: ledger, ...eventFields },
+    create: { id: SYNC_STATE_ID, lastIndexedLedger: ledger, ...eventFields },
   });
 }
 
@@ -510,7 +511,7 @@ async function poll(): Promise<void> {
       await saveCursor(lastEvent.pagingToken);
     }
     if (typeof lastEvent.ledger === "number") {
-      await setLastIndexedLedger(lastEvent.ledger);
+      await setLastIndexedLedger(lastEvent.ledger, true);
     }
   } else if (maxEventLedger > lastLedger) {
     await setLastIndexedLedger(maxEventLedger);
@@ -580,7 +581,7 @@ export async function getHorizonStatus(): Promise<{ cursor: string; dlqDepth: nu
     create: { id: SYNC_STATE_ID, lastIndexedLedger: 0 },
   });
   const dlqDepth = await prisma.horizonDlq.count({ where: { replayedAt: null } });
-  return { cursor: syncState.lastIndexedLedger.toString(), dlqDepth, lastEventTimestamp: syncState.updatedAt || null };
+  return { cursor: syncState.lastIndexedLedger.toString(), dlqDepth, lastEventTimestamp: syncState.lastEventAt ?? null };
 }
 
 export async function overrideHorizonCursor(cursor: string): Promise<void> {

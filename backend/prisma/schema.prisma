@@ -620,9 +620,10 @@ model Report {
 }
 
 model SyncState {
-  id                String   @id @default("default")
-  lastIndexedLedger Int      @default(0)
-  updatedAt         DateTime @updatedAt
+  id                String    @id @default("default")
+  lastIndexedLedger Int       @default(0)
+  lastEventAt       DateTime?
+  updatedAt         DateTime  @updatedAt
 }
 
 model HorizonCursor {
