@@ -208,8 +208,12 @@ pub struct UserReputation {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A stake threshold and its reputation multiplier.
+///
+/// `multiplier` is scaled by 100: 100 means 1.0x and 150 means 1.5x.
 pub struct StakeTier {
     pub threshold: i128,
+    /// Reputation multiplier in hundredths (for example, 150 = 1.5x).
     pub multiplier: u32,
 }
 
@@ -225,7 +229,9 @@ pub struct UserReputationWithReferrer {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A referral bonus contribution already converted into reputation score.
 pub struct ReferralBonusRecord {
+    /// Pre-multiplied score contribution, not the raw referral value.
     pub amount: u64,
     pub weight: u64,
     pub timestamp: u64,
@@ -2189,6 +2195,12 @@ impl ReputationContract {
             .persistent()
             .get(&DataKey::StakeBalance(user))
             .unwrap_or(0)
+    }
+
+    /// Returns the token address that denominates the user's current stake.
+    /// Returns `None` if the user has no recorded stake token.
+    pub fn get_stake_token(env: Env, user: Address) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::StakeToken(user))
     }
 
     /// Returns the stake-adjusted average rating for `user` on a **0–10,000** scale.

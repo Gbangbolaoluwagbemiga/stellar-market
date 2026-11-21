@@ -3628,6 +3628,8 @@ fn test_claim_stake_partial_withdrawal() {
         &MIN_STAKE,
     );
 
+    assert_eq!(reputation_client.get_stake_token(&reviewer), Some(token_addr.clone()));
+
     // Advance past the 7-day lockup window before claiming.
     env.ledger().with_mut(|l| l.timestamp = 1000 + STAKE_LOCKUP_SECONDS + 1);
 
