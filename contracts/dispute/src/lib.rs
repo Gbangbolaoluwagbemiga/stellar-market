@@ -18,6 +18,18 @@ mod reputation {
         pub review_count: u32,
         pub last_updated_ts: u32,
     }
+
+    /// #1806: Mirror of the reputation contract's DisputeOutcome enum.
+    /// Single definition at module scope — previously duplicated inline
+    /// inside `internal_resolve`.
+    #[contracttype]
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+    #[repr(u32)]
+    pub enum DisputeOutcome {
+        Won = 0,
+        Lost = 1,
+        MaliciousFiling = 2,
+    }
 }
 
 #[contracterror]
@@ -977,7 +989,7 @@ impl DisputeContract {
         initiator: Address,
         reason: String,
         min_votes: u32,
-        _tie_break_method: Option<TieBreakMethod>,
+        tie_break_method: Option<TieBreakMethod>,
     ) -> Result<u64, DisputeError> {
         initiator.require_auth();
         require_not_paused(&env)?;
@@ -1052,7 +1064,7 @@ impl DisputeContract {
             votes_for_malicious: 0,
             votes_for_split_award: 0,
             min_votes: if min_votes < AUTO_RESOLVE_VOTE_THRESHOLD { AUTO_RESOLVE_VOTE_THRESHOLD } else { min_votes },
-            tie_break_method: TieBreakMethod::RefundBoth,
+            tie_break_method: tie_break_method.unwrap_or(TieBreakMethod::RefundBoth),
             created_at: env.ledger().timestamp(),
             voting_deadline: env.ledger().timestamp().saturating_add(VOTING_PERIOD_SECS),
             excluded_voters,
@@ -2369,6 +2381,23 @@ impl DisputeContract {
             .get(&DataKey::SlashAmount)
             .unwrap_or(DEFAULT_SLASH_AMOUNT)
     }
+    /// #1807: Read the pending resolution for a dispute stuck in `ResolutionFailed`.
+    /// Returns `None` if the dispute is not in `ResolutionFailed` or has no
+    /// cached resolution. This is a read-only getter — it does not retry the
+    /// escrow callback (use `retry_resolution` for that).
+    pub fn get_pending_resolution(env: Env, dispute_id: u64) -> Option<DisputeResolution> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingResolution(dispute_id))
+    }
+    /// #1808: Returns the reputation contract address configured at initialization.
+    pub fn get_reputation_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::ReputationContract)
+    }
+    /// #1808: Returns the escrow contract address configured at initialization.
+    pub fn get_escrow_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::EscrowContract)
+    }
 
     /// Retry the escrow callback for a dispute whose resolution previously failed.
     ///
@@ -2585,20 +2614,9 @@ fn internal_resolve(
             .instance()
             .get::<DataKey, Address>(&DataKey::ReputationContract)
         {
-            // Import DisputeOutcome inline so we can pass it to the reputation contract.
-            mod reputation_types {
-                use soroban_sdk::contracttype;
-                #[contracttype]
-                #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-                #[repr(u32)]
-                pub enum DisputeOutcome {
-                    Won = 0,
-                    Lost = 1,
-                    MaliciousFiling = 2,
-                }
-            }
-
-            let outcome = reputation_types::DisputeOutcome::MaliciousFiling;
+            // #1806: Use the module-scope reputation::DisputeOutcome instead of
+            // a buried inline duplicate.
+            let outcome = reputation::DisputeOutcome::MaliciousFiling;
             let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
                 &reputation_contract,
                 &Symbol::new(env, "apply_dispute_outcome"),
