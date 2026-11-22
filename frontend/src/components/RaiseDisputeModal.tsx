@@ -188,7 +188,7 @@ export default function RaiseDisputeModal({
           hash: txResult.hash,
           type: "RAISE_DISPUTE",
           jobId: job.id,
-          onChainDisputeId: 1,
+          onChainDisputeId: initData.onChainDisputeId,
           respondentId: initData.respondentId,
           reason,
         },
