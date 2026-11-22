@@ -794,6 +794,15 @@ router.get(
     if (!manifest) {
       return res.status(404).json({ error: "Upload session not found" });
     }
+
+    const access = await assertDisputeParticipant(
+      manifest.disputeId,
+      req.userId!,
+    );
+    if (!access.allowed) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
     return res.status(200).json({
       sessionId,
       totalChunks: manifest.totalChunks,

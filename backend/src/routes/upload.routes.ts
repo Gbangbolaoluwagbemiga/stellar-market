@@ -18,6 +18,7 @@ import {
 import { validateFileMimeType, formatFileSize } from "../utils/fileValidation";
 import { scanFile } from "../utils/virusScanner";
 import { auditLogger } from "../utils/auditLogger";
+import { withUpstreamTimeout } from "../lib/upstream-timeout";
 
 const router = Router();
 const prisma = new PrismaClient();
@@ -212,8 +213,17 @@ router.post(
 
       if (anchorTxHash) {
         try {
-          const horizonRes = await fetch(
-            `${config.stellar.horizonUrl}/transactions/${anchorTxHash}`,
+          const horizonRes = await withUpstreamTimeout(
+            async (signal) =>
+              fetch(
+                `${config.stellar.horizonUrl}/transactions/${anchorTxHash}`,
+                { signal },
+              ),
+            {
+              route: "POST /api/uploads",
+              target: "Horizon",
+              code: "HorizonUnavailable",
+            },
           );
           if (!horizonRes.ok) {
             fs.unlinkSync(req.file.path);
@@ -222,9 +232,10 @@ router.post(
                 "Anchor transaction not found on the Stellar network. Provide a valid transaction hash.",
             });
           }
-        } catch {
+        } catch (error) {
           fs.unlinkSync(req.file.path);
-          return res.status(502).json({
+          const statusCode = (error as { statusCode?: number })?.statusCode || 502;
+          return res.status(statusCode).json({
             error:
               "Unable to verify anchor transaction on the Stellar network. Please try again.",
           });

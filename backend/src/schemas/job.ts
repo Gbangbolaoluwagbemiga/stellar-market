@@ -24,7 +24,13 @@ export const createJobSchema = z.object({
     .array(z.string())
     .min(1, "At least one skill is required")
     .max(10, "Cannot have more than 10 skills"),
-  deadline: z.string().datetime("Invalid deadline format"),
+  deadline: z
+    .string()
+    .datetime("Invalid deadline format")
+    .refine(
+      (deadline) => new Date(deadline) > new Date(),
+      "Deadline must be in the future",
+    ),
   category: z.string().min(2, "Category is required"),
 });
 
@@ -69,7 +75,13 @@ export const createJobWithMilestonesSchema = z.object({
     .array(z.string())
     .min(1, "At least one skill is required")
     .max(10, "Cannot have more than 10 skills"),
-  deadline: z.string().datetime("Invalid deadline format"),
+  deadline: z
+    .string()
+    .datetime("Invalid deadline format")
+    .refine(
+      (deadline) => new Date(deadline) > new Date(),
+      "Deadline must be in the future",
+    ),
   category: z.string().min(2, "Category is required"),
   paymentToken: z.string().min(1).max(64).optional(),
   idempotencyKey: z
