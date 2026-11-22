@@ -26,6 +26,7 @@ import skillRoutes from "./skill.routes";
 import emailPreviewRoutes from "./admin/emailPreview";
 import fraudRoutes from "./admin/fraud.routes";
 import unsubscribeRoutes from "./unsubscribe.routes";
+import reputationRoutes from "./reputation.routes";
 
 const router = Router();
 
@@ -56,5 +57,6 @@ router.use("/portfolio", portfolioRoutes);
 router.use("/webhooks", webhookRoutes);
 router.use("/reports", reportRoutes);
 router.use("/unsubscribe", unsubscribeRoutes);
+router.use("/reputation", reputationRoutes);
 
 export default router;

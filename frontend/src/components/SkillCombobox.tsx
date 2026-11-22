@@ -41,6 +41,7 @@ export default function SkillCombobox({
   const [suggestions, setSuggestions] = useState<SkillSuggestion[]>([]);
   const [activeIndex, setActiveIndex] = useState(-1);
   const [open, setOpen] = useState(false);
+  const [atCapError, setAtCapError] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
@@ -69,7 +70,14 @@ export default function SkillCombobox({
   function addSkill(skill: string) {
     const trimmed = skill.trim();
     if (!trimmed) return;
-    if (skills.length >= maxSkills) return;
+    if (skills.length >= maxSkills) {
+      setQuery("");
+      setSuggestions([]);
+      setOpen(false);
+      setAtCapError(true);
+      return;
+    }
+    setAtCapError(false);
     if (skills.some((s) => s.toLowerCase() === trimmed.toLowerCase())) {
       setQuery("");
       setOpen(false);
@@ -174,6 +182,12 @@ export default function SkillCombobox({
             </li>
           ))}
         </ul>
+      )}
+
+      {atCapError && (
+        <p role="alert" className="mt-1 text-xs text-theme-error">
+          You have reached the maximum of {maxSkills} skills.
+        </p>
       )}
 
       {skills.length > 0 && (
