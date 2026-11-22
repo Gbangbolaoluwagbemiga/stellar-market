@@ -18,6 +18,18 @@ mod reputation {
         pub review_count: u32,
         pub last_updated_ts: u32,
     }
+
+    /// #1806: Mirror of the reputation contract's DisputeOutcome enum.
+    /// Single definition at module scope — previously duplicated inline
+    /// inside `internal_resolve`.
+    #[contracttype]
+    #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+    #[repr(u32)]
+    pub enum DisputeOutcome {
+        Won = 0,
+        Lost = 1,
+        MaliciousFiling = 2,
+    }
 }
 
 #[contracterror]
@@ -81,12 +93,24 @@ pub enum DisputeStatus {
     ResolutionFailed,
 }
 
+/// How an exact vote tie is broken when arbitrators are split evenly.
+///
+/// This enum is consulted **only when the vote tally is an exact tie**;
+/// when one side has more votes it has no effect. The variant names mirror
+/// some [`DisputeResolution`] variants but carry different semantics — see
+/// each variant's doc for the distinction.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TieBreakMethod {
+    /// Award the tied dispute in favour of the freelancer.
     FavorFreelancer,
+    /// Award the tied dispute in favour of the client.
     FavorClient,
+    /// Unlike [`DisputeResolution::Escalate`], which escalates from the
+    /// normal resolution path to an appeal panel, this variant escalates
+    /// a *tied appeal* to a higher governance body or admin-level review.
     Escalate,
+    /// Refund both parties equally, treating the tie as indeterminate.
     RefundBoth,
 }
 
@@ -491,6 +515,14 @@ fn bump_evidence_ttl(env: &Env, dispute_id: u64) {
     );
 }
 
+/// Issue #1809: TTL-bump helper for the Voters tracking key.
+fn bump_voters_ttl(env: &Env, dispute_id: u64) {
+    env.storage().persistent().extend_ttl(
+        &DataKey::Voters(dispute_id),
+        MIN_TTL_THRESHOLD,
+        MIN_TTL_EXTEND_TO,
+    );
+}
 fn bump_pending_resolution_ttl(env: &Env, dispute_id: u64) {
     env.storage().persistent().extend_ttl(
         &DataKey::PendingResolution(dispute_id),
@@ -960,7 +992,7 @@ impl DisputeContract {
         initiator: Address,
         reason: String,
         min_votes: u32,
-        _tie_break_method: Option<TieBreakMethod>,
+        tie_break_method: Option<TieBreakMethod>,
     ) -> Result<u64, DisputeError> {
         initiator.require_auth();
         require_not_paused(&env)?;
@@ -1035,7 +1067,7 @@ impl DisputeContract {
             votes_for_malicious: 0,
             votes_for_split_award: 0,
             min_votes: if min_votes < AUTO_RESOLVE_VOTE_THRESHOLD { AUTO_RESOLVE_VOTE_THRESHOLD } else { min_votes },
-            tie_break_method: TieBreakMethod::RefundBoth,
+            tie_break_method: tie_break_method.unwrap_or(TieBreakMethod::RefundBoth),
             created_at: env.ledger().timestamp(),
             voting_deadline: env.ledger().timestamp().saturating_add(VOTING_PERIOD_SECS),
             excluded_voters,
@@ -1195,6 +1227,7 @@ impl DisputeContract {
         env.storage()
             .persistent()
             .set(&DataKey::Voters(dispute_id), &voters);
+        bump_voters_ttl(&env, dispute_id); // Issue #1809
 
         // Record vote
         let vote = Vote {
@@ -2033,10 +2066,15 @@ impl DisputeContract {
 
     /// Get all arbitrators (voters) who have voted on a dispute.
     pub fn get_arbitrators(env: Env, dispute_id: u64) -> Vec<Address> {
-        env.storage()
+        let voters = env
+            .storage()
             .persistent()
             .get(&DataKey::Voters(dispute_id))
-            .unwrap_or(Vec::<Address>::new(&env))
+            .unwrap_or(Vec::<Address>::new(&env));
+        if !voters.is_empty() {
+            bump_voters_ttl(&env, dispute_id); // Issue #1809
+        }
+        voters
     }
 
     /// Get the assigned arbitrators for a dispute (those assigned via `raise_dispute` on initial
@@ -2084,6 +2122,28 @@ impl DisputeContract {
             .instance()
             .get(&DataKey::DisputeCount)
             .unwrap_or(0)
+    }
+
+    /// Issue #1810: Get total appeal count — the appeal-side counterpart of
+    /// `get_dispute_count`. Lets a UI enumerate all appeals from `1..=get_appeal_count()`
+    /// without iterating and catching not-found errors.
+    pub fn get_appeal_count(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AppealCount)
+            .unwrap_or(0)
+    }
+
+    /// Issue #1811: Get the configured reputation-slash basis points.
+    ///
+    /// Returns the value set during `initialize` (or by governance), falling
+    /// back to the same default used internally. Lets a UI display "losing a
+    /// dispute slashes N% of reputation" without hardcoding the default.
+    pub fn get_reputation_slash_bps(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReputationSlashBps)
+            .unwrap_or(DEFAULT_REPUTATION_SLASH_BPS)
     }
 
     /// Delegate vote rights for a specific job's dispute to another address.
@@ -2341,6 +2401,23 @@ impl DisputeContract {
             .get(&DataKey::SlashAmount)
             .unwrap_or(DEFAULT_SLASH_AMOUNT)
     }
+    /// #1807: Read the pending resolution for a dispute stuck in `ResolutionFailed`.
+    /// Returns `None` if the dispute is not in `ResolutionFailed` or has no
+    /// cached resolution. This is a read-only getter — it does not retry the
+    /// escrow callback (use `retry_resolution` for that).
+    pub fn get_pending_resolution(env: Env, dispute_id: u64) -> Option<DisputeResolution> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::PendingResolution(dispute_id))
+    }
+    /// #1808: Returns the reputation contract address configured at initialization.
+    pub fn get_reputation_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::ReputationContract)
+    }
+    /// #1808: Returns the escrow contract address configured at initialization.
+    pub fn get_escrow_contract(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::EscrowContract)
+    }
 
     /// Retry the escrow callback for a dispute whose resolution previously failed.
     ///
@@ -2557,20 +2634,9 @@ fn internal_resolve(
             .instance()
             .get::<DataKey, Address>(&DataKey::ReputationContract)
         {
-            // Import DisputeOutcome inline so we can pass it to the reputation contract.
-            mod reputation_types {
-                use soroban_sdk::contracttype;
-                #[contracttype]
-                #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-                #[repr(u32)]
-                pub enum DisputeOutcome {
-                    Won = 0,
-                    Lost = 1,
-                    MaliciousFiling = 2,
-                }
-            }
-
-            let outcome = reputation_types::DisputeOutcome::MaliciousFiling;
+            // #1806: Use the module-scope reputation::DisputeOutcome instead of
+            // a buried inline duplicate.
+            let outcome = reputation::DisputeOutcome::MaliciousFiling;
             let _ = env.try_invoke_contract::<(), soroban_sdk::Error>(
                 &reputation_contract,
                 &Symbol::new(env, "apply_dispute_outcome"),

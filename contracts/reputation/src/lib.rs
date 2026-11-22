@@ -208,8 +208,12 @@ pub struct UserReputation {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A stake threshold and its reputation multiplier.
+///
+/// `multiplier` is scaled by 100: 100 means 1.0x and 150 means 1.5x.
 pub struct StakeTier {
     pub threshold: i128,
+    /// Reputation multiplier in hundredths (for example, 150 = 1.5x).
     pub multiplier: u32,
 }
 
@@ -225,7 +229,9 @@ pub struct UserReputationWithReferrer {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A referral bonus contribution already converted into reputation score.
 pub struct ReferralBonusRecord {
+    /// Pre-multiplied score contribution, not the raw referral value.
     pub amount: u64,
     pub weight: u64,
     pub timestamp: u64,
@@ -344,7 +350,6 @@ pub enum AdminAction {
     Unpause,
     SetMinStake(i128),
     SetRateLimit(u32),
-    SetToken(Address),
     SetReferralBonus(u64),
     SetDecayRate(u32),
     SlashStake(Address, u64, u64), // loser, job_id, amount
@@ -388,7 +393,6 @@ enum DataKey {
     MinStake,
     RateLimit,
     LastReviewLedger(Address),
-    Token,
     Paused,
     Referrer(Address),
     ReferralStats(Address),
@@ -600,6 +604,19 @@ fn bump_instance_ttl(env: &Env) {
         .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
 }
 
+/// Applies linear annual reputation decay to `rep` in place.
+///
+/// The configured `decay_rate` (percent per year, default 0) is converted into a
+/// retained percentage of `max(0, 100 - decay_rate * elapsed_seconds /
+/// ONE_YEAR_IN_SECONDS)`, and both `total_score` and `total_weight` are scaled
+/// by it using integer arithmetic. The contract instance TTL is extended on
+/// every call.
+///
+/// `last_updated_ts` is refreshed to the current ledger timestamp even when the
+/// rate disables decay (`decay_rate == 0`) or saturates it (`decay_rate >= 100`);
+/// no score scaling happens in those cases. It is also refreshed after a normal
+/// decay calculation. When `last_updated_ts` is already at or ahead of the
+/// current timestamp, `rep` is left unchanged.
 pub fn apply_lazy_decay(env: &Env, rep: &mut UserReputation) {
     env.storage()
         .instance()
@@ -1178,6 +1195,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::ReferralBonus, &bonus);
@@ -1284,6 +1302,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if decay_rate > effective_max_decay_rate(&env) {
             return Err(ReputationError::DecayRateTooHigh);
         }
@@ -1314,6 +1333,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if rate > MAX_DECAY_RATE_HARD_CEILING {
             return Err(ReputationError::DecayRateTooHigh);
         }
@@ -1469,6 +1489,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
 
         env.storage()
             .instance()
@@ -1657,6 +1678,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MinStakeWeight, &weight);
@@ -1676,6 +1698,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::BannedUser(user.clone()), &true);
@@ -1695,6 +1718,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .remove(&DataKey::BannedUser(user.clone()));
@@ -1716,6 +1740,19 @@ impl ReputationContract {
         proposer.require_auth();
         if !is_signer(&env, &proposer) {
             return Err(ReputationError::NotAdmin);
+        }
+
+        // Validate payloads before opening the proposal so signers never approve
+        // an action that is already invalid. `execute_proposal` repeats these
+        // checks as a defense-in-depth measure (issue #1818).
+        match &action {
+            AdminAction::SetDecayRate(rate) if *rate > effective_max_decay_rate(&env) => {
+                return Err(ReputationError::DecayRateTooHigh);
+            }
+            AdminAction::SetStakeTiers(tiers) if tiers.len() > MAX_STAKE_TIERS => {
+                return Err(ReputationError::TooManyStakeTiers);
+            }
+            _ => {}
         }
 
         let mut count: u64 = env
@@ -1843,9 +1880,6 @@ impl ReputationContract {
             }
             AdminAction::SetRateLimit(ledgers) => {
                 env.storage().instance().set(&DataKey::RateLimit, &ledgers);
-            }
-            AdminAction::SetToken(token) => {
-                env.storage().instance().set(&DataKey::Token, &token);
             }
             AdminAction::SetReferralBonus(bonus) => {
                 env.storage()
@@ -2149,6 +2183,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if tiers.len() > MAX_STAKE_TIERS {
             return Err(ReputationError::TooManyStakeTiers);
         }
@@ -2189,6 +2224,12 @@ impl ReputationContract {
             .persistent()
             .get(&DataKey::StakeBalance(user))
             .unwrap_or(0)
+    }
+
+    /// Returns the token address that denominates the user's current stake.
+    /// Returns `None` if the user has no recorded stake token.
+    pub fn get_stake_token(env: Env, user: Address) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::StakeToken(user))
     }
 
     /// Returns the stake-adjusted average rating for `user` on a **0–10,000** scale.

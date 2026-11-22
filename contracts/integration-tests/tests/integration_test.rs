@@ -17,7 +17,7 @@ use soroban_sdk::{
 
 use stellar_market_dispute::{DisputeContract, DisputeContractClient, DisputeStatus, VoteChoice};
 use stellar_market_escrow::{EscrowContract, EscrowContractClient, JobStatus, MilestoneStatus};
-use stellar_market_reputation::{AdminAction, ReputationContract, ReputationContractClient};
+use stellar_market_reputation::{ReputationContract, ReputationContractClient};
 
 // Mock reputation contract that always returns high reputation for any user.
 // Used in dispute integration tests so that randomly-generated voter addresses
@@ -98,7 +98,6 @@ fn test_happy_path_job_completion_with_reputation() {
     // Initialize reputation contract with multi-sig
     let signers = Vec::from_array(&env, [admin.clone()]);
     reputation_client.initialize(&signers, &1, &50);
-    reputation_client.propose_admin_action(&admin, &AdminAction::SetToken(token_address.clone()));
 
     // Step 1: Create job with milestones
     let milestones = vec![
@@ -494,7 +493,6 @@ fn test_multiple_jobs_with_reputation_accumulation() {
     // Initialize reputation contract with multi-sig
     let signers = Vec::from_array(&env, [admin.clone()]);
     reputation_client.initialize(&signers, &1, &50);
-    reputation_client.propose_admin_action(&admin, &AdminAction::SetToken(token_address.clone()));
 
     // Job 1: Client1 -> Freelancer
     let milestones1 = vec![
