@@ -3595,6 +3595,17 @@ fn test_valid_referral_chain_no_loop() {
 // ================================================================================================
 
 #[test]
+fn get_stake_token_returns_none_before_first_stake() {
+    let env = Env::default();
+    let reputation_id = env.register_contract(None, ReputationContract);
+    let reputation_client = ReputationContractClient::new(&env, &reputation_id);
+    let user = Address::generate(&env);
+
+    assert_eq!(reputation_client.get_stake_balance(&user), 0);
+    assert_eq!(reputation_client.get_stake_token(&user), None);
+}
+
+#[test]
 fn test_claim_stake_partial_withdrawal() {
     let env = Env::default();
     env.mock_all_auths();

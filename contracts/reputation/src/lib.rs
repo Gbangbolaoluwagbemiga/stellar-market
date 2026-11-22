@@ -212,6 +212,7 @@ pub struct UserReputation {
 ///
 /// `multiplier` is scaled by 100: 100 means 1.0x and 150 means 1.5x.
 pub struct StakeTier {
+    /// Minimum raw stake, in the token's smallest unit, for this tier.
     pub threshold: i128,
     /// Reputation multiplier in hundredths (for example, 150 = 1.5x).
     pub multiplier: u32,
@@ -233,7 +234,9 @@ pub struct UserReputationWithReferrer {
 pub struct ReferralBonusRecord {
     /// Pre-multiplied score contribution, not the raw referral value.
     pub amount: u64,
+    /// Weight applied when the contribution is included in decayed totals.
     pub weight: u64,
+    /// Unix timestamp at which this contribution was recorded.
     pub timestamp: u64,
 }
 
@@ -2228,6 +2231,7 @@ impl ReputationContract {
 
     /// Returns the token address that denominates the user's current stake.
     /// Returns `None` if the user has no recorded stake token.
+    /// This is the token paired with [`Self::get_stake_balance`].
     pub fn get_stake_token(env: Env, user: Address) -> Option<Address> {
         env.storage().persistent().get(&DataKey::StakeToken(user))
     }
