@@ -400,7 +400,7 @@ function JobsContent() {
               className={`hidden sm:flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-full border transition-colors ${
                 liveFeedEnabled
                   ? "bg-stellar-blue/20 border-stellar-blue text-stellar-blue"
-                  : "border-dark-border text-dark-text hover:border-stellar-blue hover:text-stellar-blue"
+                  : "border-theme-border text-theme-text hover:border-stellar-blue hover:text-stellar-blue"
               }`}
               title={liveFeedEnabled ? "Disable live feed" : "Enable live feed"}
             >

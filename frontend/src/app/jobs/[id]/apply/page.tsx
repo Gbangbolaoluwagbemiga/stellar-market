@@ -42,8 +42,8 @@ export default function ApplyPage() {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12">
         <div className="animate-pulse space-y-4">
-          <div className="h-6 bg-dark-card rounded w-1/3" />
-          <div className="h-40 bg-dark-card rounded" />
+          <div className="h-6 bg-theme-card rounded w-1/3" />
+          <div className="h-40 bg-theme-card rounded" />
         </div>
       </div>
     );
@@ -63,7 +63,7 @@ export default function ApplyPage() {
   if (!user) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <p className="text-dark-text mb-4">
+        <p className="text-theme-text mb-4">
           You need to be logged in to apply.
         </p>
         <Link href="/auth/login" className="btn-primary inline-block">
@@ -76,7 +76,7 @@ export default function ApplyPage() {
   if (user.id === job.client.id) {
     return (
       <div className="max-w-2xl mx-auto px-4 py-12 text-center">
-        <p className="text-dark-text mb-4">
+        <p className="text-theme-text mb-4">
           You cannot apply to your own job.
         </p>
         <Link
@@ -93,7 +93,7 @@ export default function ApplyPage() {
     <div className="max-w-2xl mx-auto px-4 py-12">
       <Link
         href={`/jobs/${jobId}`}
-        className="flex items-center gap-2 text-dark-text hover:text-dark-heading mb-8 transition-colors"
+        className="flex items-center gap-2 text-theme-text hover:text-theme-heading mb-8 transition-colors"
       >
         <ArrowLeft size={18} /> Back to Job
       </Link>
