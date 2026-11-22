@@ -598,6 +598,7 @@ router.post(
     }
 
     const attachments = [];
+    const failed = [];
 
     if (!isEvidenceStorageConfigured()) {
       for (const f of files) fs.unlinkSync(f.path);
@@ -612,6 +613,10 @@ router.post(
 
       if (!validation.valid) {
         fs.unlinkSync(file.path);
+        failed.push({
+          filename: file.originalname,
+          reason: validation.error || "Invalid MIME type",
+        });
         continue;
       }
 
@@ -627,6 +632,10 @@ router.post(
       const clientSha256 = hashes[i] || null;
       if (clientSha256 && clientSha256 !== computedSha256) {
         fs.unlinkSync(file.path);
+        failed.push({
+          filename: file.originalname,
+          reason: "Hash mismatch: computed SHA-256 does not match client-provided hash",
+        });
         continue;
       }
 
@@ -635,6 +644,10 @@ router.post(
         const txExists = await verifyAnchorTxOnHorizon(candidateAnchorTx);
         if (!txExists) {
           fs.unlinkSync(file.path);
+          failed.push({
+            filename: file.originalname,
+            reason: "Anchor transaction not found on Horizon",
+          });
           continue;
         }
       }
@@ -679,7 +692,16 @@ router.post(
       });
     }
 
-    res.status(201).json({ attachments });
+    // Return 400 if all files failed, partial success if at least one succeeded
+    if (attachments.length === 0 && failed.length > 0) {
+      return res.status(400).json({
+        error: "All uploaded files failed validation",
+        attachments: [],
+        failed,
+      });
+    }
+
+    res.status(201).json({ attachments, failed });
   }),
 );
 
@@ -772,6 +794,15 @@ router.get(
     if (!manifest) {
       return res.status(404).json({ error: "Upload session not found" });
     }
+
+    const access = await assertDisputeParticipant(
+      manifest.disputeId,
+      req.userId!,
+    );
+    if (!access.allowed) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
     return res.status(200).json({
       sessionId,
       totalChunks: manifest.totalChunks,

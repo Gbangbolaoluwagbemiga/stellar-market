@@ -43,6 +43,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@swc/cli": "^0.8.0",
     "@swc/core": "^1.15.21",
     "@testing-library/jest-dom": "^6.9.1",

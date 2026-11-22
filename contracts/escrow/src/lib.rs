@@ -365,6 +365,7 @@ pub struct Job {
 
 pub(crate) const MAX_FEE_BPS: u32 = 500; // 5%
 const MAX_MILESTONES: u32 = 50;
+const REFUND_SPLIT_PERCENT_DENOMINATOR: i128 = 100;
 
 /// A formal proposal to revise the milestones and total budget of an active job.
 #[contracttype]
@@ -456,7 +457,6 @@ pub struct SubAssignment {
 enum DataKey {
     Job(u64),
     JobCount,
-    Admin, // Legacy single admin
     Paused,
     AllowedTokens,
     RevisionProposal(u64),
@@ -534,6 +534,11 @@ fn resolve_milestone_token(milestone: &Milestone, job: &Job) -> Address {
     milestone.token.clone().unwrap_or_else(|| job.token.clone())
 }
 
+fn refund_split_client_amount(amount: i128, pct_client: u32) -> i128 {
+    let pct = pct_client.min(REFUND_SPLIT_PERCENT_DENOMINATOR as u32) as i128;
+    (amount * pct) / REFUND_SPLIT_PERCENT_DENOMINATOR
+}
+
 /// Transfer `amount` of `token` from this contract to the appropriate party according
 /// to the dispute resolution. No-op when amount <= 0 or resolution is Escalate.
 fn apply_dispute_distribution(
@@ -565,8 +570,7 @@ fn apply_dispute_distribution(
             }
         }
         DisputeResolution::RefundSplit(pct_client) => {
-            let pct = if *pct_client > 100 { 100 } else { *pct_client } as i128;
-            let ca = (amount * pct) / 100;
+            let ca = refund_split_client_amount(amount, *pct_client);
             let fa = amount - ca;
             if ca > 0 {
                 tc.transfer(&contract, client, &ca);
@@ -980,6 +984,22 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Add a token to the list of allowed payment tokens for jobs.
+    ///
+    /// # Authorization
+    /// Only registered multi-sig signers may call this function. The caller must sign the invocation.
+    ///
+    /// # Arguments
+    /// * `admin` — A registered signer authorizing this action
+    /// * `token` — Address of the token contract to allow
+    ///
+    /// # Behavior
+    /// - If the token is already in the allowed list, this is a no-op (idempotent)
+    /// - Emits a `token_allowed` event when a new token is added
+    ///
+    /// # Errors
+    /// * `ContractPaused` — the contract is currently paused
+    /// * `NotAdmin` — caller is not a registered signer
     pub fn add_allowed_token(env: Env, admin: Address, token: Address) -> Result<(), EscrowError> {
         require_not_paused(&env)?;
 
@@ -1006,6 +1026,22 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Remove a token from the list of allowed payment tokens for jobs.
+    ///
+    /// # Authorization
+    /// Only registered multi-sig signers may call this function. The caller must sign the invocation.
+    ///
+    /// # Arguments
+    /// * `admin` — A registered signer authorizing this action
+    /// * `token` — Address of the token contract to revoke
+    ///
+    /// # Behavior
+    /// - If the token is not in the allowed list, this is a no-op (idempotent)
+    /// - Emits a `token_revoked` event when a token is removed
+    ///
+    /// # Errors
+    /// * `ContractPaused` — the contract is currently paused
+    /// * `NotAdmin` — caller is not a registered signer
     pub fn remove_allowed_token(
         env: Env,
         admin: Address,
@@ -1036,6 +1072,10 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Retrieve the list of tokens that are currently allowed for payment in jobs.
+    ///
+    /// # Returns
+    /// A vector of token contract addresses. Returns an empty vector if no tokens have been allowed.
     pub fn get_allowed_tokens(env: Env) -> Vec<Address> {
         env.storage()
             .instance()
@@ -1075,6 +1115,8 @@ impl EscrowContract {
         admin: Address,
         oracle: Address,
     ) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+
         admin.require_auth();
         if !is_signer(&env, &admin) {
             return Err(EscrowError::NotAdmin);
@@ -1094,6 +1136,8 @@ impl EscrowContract {
         admin: Address,
         dispute_contract: Address,
     ) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+
         admin.require_auth();
         if !is_signer(&env, &admin) {
             return Err(EscrowError::NotAdmin);
@@ -1264,6 +1308,15 @@ impl EscrowContract {
     /// Return a multi-sig proposal by id, whether it is pending or archived.
     pub fn get_multisig_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
         load_proposal(&env, proposal_id)
+    }
+
+    /// Return the timestamp at which a multi-sig proposal becomes executable.
+    ///
+    /// Returns `None` if the proposal has no timelock entry or is unknown.
+    pub fn get_execution_not_before(env: Env, proposal_id: u64) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiSigExecutionNotBefore(proposal_id))
     }
 
     /// Record an additional approval on a pending multi-sig proposal. When the
@@ -2399,8 +2452,7 @@ impl EscrowContract {
                 }
             }
             DisputeResolution::RefundSplit(pct_client) => {
-                let pct = if pct_client > 100 { 100 } else { pct_client } as i128;
-                let client_amount = (remaining * pct) / 100;
+                let client_amount = refund_split_client_amount(remaining, pct_client);
                 PayoutBreakdown {
                     client: client_amount,
                     freelancer: remaining - client_amount,
@@ -3435,6 +3487,9 @@ impl EscrowContract {
         // Refund the remaining escrowed amount (total minus already-approved milestones).
         // Pay already-approved milestones to the freelancer, since payment only happens in complete_job.
         // For multi-token jobs, operate per distinct token.
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let default_approved: i128 = job
             .milestones
             .iter()
@@ -3448,6 +3503,7 @@ impl EscrowContract {
         }
         if default_refund > 0 {
             default_tc.transfer(&env.current_contract_address(), &client, &default_refund);
+            refund_by_token.set(job.token.clone(), default_refund);
         }
 
         // Non-default tokens.
@@ -3467,9 +3523,9 @@ impl EscrowContract {
             }
             if tb_refund > 0 {
                 tc.transfer(&env.current_contract_address(), &client, &tb_refund);
+                refund_by_token.set(tb.token.clone(), tb_refund);
             }
         }
-        let refund = default_refund; // used in event below
 
         // Cancel any active sub-assignments for milestones that were not approved.
         // Unapproved milestones are refunded to the client, so sub-freelancers
@@ -3498,11 +3554,34 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit JobCancelled event with job_id, client address, and refund_amount.
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("cancelled")),
-            (job_id, client, job.freelancer, refund),
-        );
+        // Emit JobCancelled event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 0 {
+            // No refund was issued (all funds were approved and paid to freelancer)
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("cancelled")),
+                (job_id, client.clone(), job.freelancer, 0_i128),
+            );
+        } else if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("cancelled")),
+                (job_id, client.clone(), job.freelancer, refund_amount),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), symbol_short!("cancelled")),
+                        (job_id, token_addr, client.clone(), job.freelancer.clone(), refund_amount),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3546,6 +3625,9 @@ impl EscrowContract {
         }
 
         // Calculate refund: total minus already-approved milestone amounts (default token).
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let default_approved: i128 = job
             .milestones
             .iter()
@@ -3580,6 +3662,7 @@ impl EscrowContract {
         // Transfer default-token refund to client.
         if refund > 0 {
             default_tc.transfer(&env.current_contract_address(), &client, &refund);
+            refund_by_token.set(job.token.clone(), refund);
         }
 
         // Non-default tokens: pay approved amounts to freelancer, remainder to client.
@@ -3599,6 +3682,7 @@ impl EscrowContract {
             }
             if tb_refund > 0 {
                 tc.transfer(&env.current_contract_address(), &client, &tb_refund);
+                refund_by_token.set(tb.token.clone(), tb_refund);
             }
         }
 
@@ -3606,11 +3690,28 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit event
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("refund")),
-            (job_id, refund, client, job.freelancer),
-        );
+        // Emit refund event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("refund")),
+                (job_id, refund_amount, client, job.freelancer),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), symbol_short!("refund")),
+                        (job_id, token_addr, refund_amount, client.clone(), job.freelancer.clone()),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3885,7 +3986,7 @@ impl EscrowContract {
 
         // 7. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_proposed"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_proposed")),
             (job_id, caller, job.client, job.freelancer, new_total),
         );
 
@@ -4150,7 +4251,7 @@ impl EscrowContract {
 
         // 10. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_accepted"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_accepted")),
             (job_id, caller, job.client, job.freelancer, new_total, delta),
         );
 
@@ -4222,7 +4323,7 @@ impl EscrowContract {
 
         // 5. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_rejected"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_rejected")),
             (job_id, caller, job.client, job.freelancer),
         );
 
@@ -4287,7 +4388,7 @@ impl EscrowContract {
 
         // 5. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_cancelled"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_cancelled")),
             (job_id, caller, job.client, job.freelancer),
         );
 
@@ -4358,7 +4459,7 @@ impl EscrowContract {
 
         // Emit revision_expired event.
         env.events().publish(
-            (Symbol::new(&env, "revision_expired"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_expired")),
             (job_id, caller, proposal.proposer),
         );
 
@@ -4432,6 +4533,9 @@ impl EscrowContract {
 
         // Refund remaining escrowed balance and pay approved milestones to freelancer.
         // Operates per-token for multi-token jobs.
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let funded_state = job.status == JobStatus::Funded
             || job.status == JobStatus::InProgress
             || job.status == JobStatus::Disputed;
@@ -4451,6 +4555,7 @@ impl EscrowContract {
             }
             if default_refund > 0 {
                 default_tc.transfer(&env.current_contract_address(), &job.client, &default_refund);
+                refund_by_token.set(job.token.clone(), default_refund);
             }
 
             // Non-default tokens.
@@ -4473,19 +4578,43 @@ impl EscrowContract {
                 }
                 if tb_refund > 0 {
                     tc.transfer(&env.current_contract_address(), &job.client, &tb_refund);
+                    refund_by_token.set(tb.token.clone(), tb_refund);
                 }
             }
         }
-        let refund = default_refund; // used in event below
 
         job.status = JobStatus::Expired;
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        env.events().publish(
-            (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
-            (job_id, job.client, job.freelancer, job.token, refund),
-        );
+        // Emit job_expired event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 0 {
+            // No refund was issued (all funds were approved, or job was never funded)
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                (job_id, job.client, job.freelancer, job.token, 0_i128),
+            );
+        } else if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                (job_id, job.client.clone(), job.freelancer, token_addr, refund_amount),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                        (job_id, token_addr, job.client.clone(), job.freelancer.clone(), refund_amount),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }

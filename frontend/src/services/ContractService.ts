@@ -56,7 +56,7 @@ function parse(native: unknown, tiers?: BadgeTier[]): ReputationResult | null {
 
   if (!totalWeight) return null;
 
-  const avgRaw = Math.floor(totalScore / totalWeight);
+  const avgRaw = Math.floor((totalScore * 100) / totalWeight);
 
   return {
     score: avgRaw / 100,
