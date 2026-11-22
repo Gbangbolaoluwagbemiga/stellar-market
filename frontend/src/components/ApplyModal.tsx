@@ -6,6 +6,7 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import axios from "axios";
 import { useAuth } from "@/context/AuthContext";
+import { useTheme } from "@/context/ThemeContext";
 import { useToast } from "@/components/Toast";
 import { useFocusTrap } from "@/hooks/useFocusTrap";
 import { Job } from "@/types";
@@ -41,6 +42,7 @@ export default function ApplyModal({
 }: ApplyModalProps) {
   const { token } = useAuth();
   const { toast } = useToast();
+  const { theme } = useTheme();
   const modalRef = useRef<HTMLDivElement>(null);
 
   useFocusTrap(modalRef, { open: isOpen, onClose });
@@ -74,7 +76,20 @@ export default function ApplyModal({
 
   const validate = useCallback((): boolean => {
     const errors: Record<string, string> = {};
-    const plainText = proposal.replace(/[#*_~`>\-\[\]()!|]/g, "").trim();
+    // Count actual text length without stripping ordinary punctuation
+    // Only remove markdown-specific formatting (bold, italic, strikethrough, etc.)
+    const plainText = proposal
+      .replace(/\*\*([^*]+)\*\*/g, "$1") // Bold: **text**
+      .replace(/\*([^*]+)\*/g, "$1")     // Italic: *text*
+      .replace(/__([^_]+)__/g, "$1")     // Bold: __text__
+      .replace(/_([^_]+)_/g, "$1")       // Italic: _text_
+      .replace(/~~([^~]+)~~/g, "$1")     // Strikethrough: ~~text~~
+      .replace(/`([^`]+)`/g, "$1")       // Inline code: `text`
+      .replace(/^>\s+/gm, "")            // Blockquote: > text
+      .replace(/^#{1,6}\s+/gm, "")       // Headers: # text
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // Links: [text](url)
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1") // Images: ![alt](url)
+      .trim();
 
     if (!proposal.trim()) {
       errors.proposal = "Cover letter is required.";
@@ -98,7 +113,19 @@ export default function ApplyModal({
   }, [proposal, bidAmount, getEstimatedDuration]);
 
   const isFormValid = useCallback((): boolean => {
-    const plainText = proposal.replace(/[#*_~`>\-\[\]()!|]/g, "").trim();
+    // Count actual text length without stripping ordinary punctuation
+    const plainText = proposal
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/_([^_]+)_/g, "$1")
+      .replace(/~~([^~]+)~~/g, "$1")
+      .replace(/`([^`]+)`/g, "$1")
+      .replace(/^>\s+/gm, "")
+      .replace(/^#{1,6}\s+/gm, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/!\[([^\]]*)\]\([^)]+\)/g, "$1")
+      .trim();
     if (!plainText || plainText.length < MIN_PROPOSAL_LENGTH || plainText.length > MAX_PROPOSAL_LENGTH) return false;
     if (!bidAmount || bidAmount <= 0) return false;
     const duration = getEstimatedDuration();
@@ -211,7 +238,7 @@ export default function ApplyModal({
             <label className="block text-sm font-medium text-theme-heading mb-2">
               Cover Letter
             </label>
-            <div data-color-mode="dark" role="textbox" aria-multiline="true" aria-label="Cover letter editor">
+            <div data-color-mode={theme} role="textbox" aria-multiline="true" aria-label="Cover letter editor">
               <MDEditor
                 value={proposal}
                 onChange={(val) => setProposal(val || "")}

@@ -65,11 +65,12 @@ Create a local env file:
 cp contracts/.env.example contracts/.env
 ```
 
-Required variables:
+Required variables for deployment scripts:
 
 - `STELLAR_NETWORK` - network name configured in Stellar CLI (for example `testnet`)
 - `SOURCE_ACCOUNT` - CLI identity/account used for deployments and invokes
-- `TOKEN_ADDRESS` - token contract address used in escrow/reputation flows
+
+`TOKEN_ADDRESS` is only needed for the escrow/reputation invoke examples below; the deploy scripts do not use it.
 
 ## Deploy Contracts
 
@@ -86,8 +87,9 @@ Each script:
 1. Loads env from `contracts/.env` (if present)
 2. Validates required variables
 3. Builds the target wasm
-4. Runs `stellar contract deploy`
-5. Prints deployed contract ID
+4. Runs `stellar contract optimize` on the built wasm
+5. Runs `stellar contract deploy` with the optimized wasm
+6. Prints deployed contract ID
 
 After deployment, record IDs in `contracts/ADDRESSES.md`.
 
@@ -98,7 +100,7 @@ Replace placeholders like `<ESCROW_CONTRACT_ID>` before running.
 ### Escrow
 
 ```bash
-# create_job(client, freelancer, token, milestones, job_deadline, auto_refund_after)
+# create_job(client, freelancer, token, milestones, job_deadline, auto_refund_after, expiry_ledger)
 stellar contract invoke \
   --id <ESCROW_CONTRACT_ID> \
   --source-account "$SOURCE_ACCOUNT" \
@@ -110,7 +112,8 @@ stellar contract invoke \
   --token "$TOKEN_ADDRESS" \
   --milestones '[["Design",10000000,1735689600],["Build",20000000,1736294400]]' \
   --job_deadline 1736899200 \
-  --auto_refund_after 1737504000
+  --auto_refund_after 1737504000 \
+  --expiry_ledger 60000000  # ledger sequence at which the escrow expires; must be greater than the current ledger
 
 # get_job(job_id)
 stellar contract invoke \
@@ -125,14 +128,16 @@ stellar contract invoke \
 ### Reputation
 
 ```bash
-# initialize(admin, decay_rate)
+# initialize(signers, threshold, decay_rate)
+# The contract is governed by a multisig signer set.
 stellar contract invoke \
   --id <REPUTATION_CONTRACT_ID> \
   --source-account "$SOURCE_ACCOUNT" \
   --network "$STELLAR_NETWORK" \
   -- \
   initialize \
-  --admin <ADMIN_ADDRESS> \
+  --signers '["<SIGNER_ADDRESS_1>", "<SIGNER_ADDRESS_2>"]' \
+  --threshold 2 \
   --decay_rate 5
 
 # submit_review(escrow_contract_id, reviewer, reviewee, job_id, rating, comment, stake_weight)
@@ -190,7 +195,9 @@ stellar contract invoke \
   --min_votes 3 \
   --tie_break_method "Escalate"
 
-# cast_vote(dispute_id, voter, choice, reason)
+# cast_vote(dispute_id, voter, choice, reason, nonce)
+# Use a fresh nonce for each cast_vote call by the same voter, even across disputes.
+# The contract rejects reused nonces during the replay-protection window.
 stellar contract invoke \
   --id <DISPUTE_CONTRACT_ID> \
   --source-account "$SOURCE_ACCOUNT" \
@@ -200,7 +207,8 @@ stellar contract invoke \
   --dispute_id 1 \
   --voter <VOTER_ADDRESS> \
   --choice "Freelancer" \
-  --reason "evidence supports delivery"
+  --reason "evidence supports delivery" \
+  --nonce 1
 
 # resolve_dispute(dispute_id)
 stellar contract invoke \

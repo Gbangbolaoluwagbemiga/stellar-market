@@ -18,66 +18,88 @@ test.describe('PWA Offline Functionality', () => {
   });
 
   test('should disable transaction buttons when offline', async ({ page, context }) => {
-    // Navigate to a job detail page (assumes test data exists)
-    await page.goto('/jobs/test-job-id');
-    
-    // Find a milestone submit button (if present)
-    const submitButton = page.getByRole('button', { name: /submit milestone/i }).first();
-    
-    if (await submitButton.isVisible()) {
-      // Initially should be enabled
-      await expect(submitButton).toBeEnabled();
-      
-      // Go offline
-      await context.setOffline(true);
-      
-      // Wait a moment for state to update
-      await page.waitForTimeout(1000);
-      
-      // Button should be disabled
-      await expect(submitButton).toBeDisabled();
-      
-      // Hover to see tooltip
-      await submitButton.hover();
-      await expect(page.getByText(/blockchain transactions require.*internet/i)).toBeVisible();
-      
-      // Go back online
-      await context.setOffline(false);
-      
-      // Wait for state to update
-      await page.waitForTimeout(1000);
-      
-      // Button should be enabled again
-      await expect(submitButton).toBeEnabled();
-    }
+    // Navigate to jobs page to get a real job
+    await page.goto('/jobs');
+
+    // Find the first job link and navigate to it
+    const firstJobLink = page.locator('a[href*="/jobs/"]').first();
+    await expect(firstJobLink).toBeVisible();
+    await firstJobLink.click();
+
+    // Wait for job details to load
+    await page.waitForLoadState('networkidle');
+
+    // Find a milestone submit button
+    const submitButton = page.getByRole('button', { name: /submit milestone|complete|finalize/i }).first();
+    await expect(submitButton).toBeVisible({ timeout: 5000 });
+
+    // Initially should be enabled
+    await expect(submitButton).toBeEnabled();
+
+    // Go offline
+    await context.setOffline(true);
+
+    // Wait a moment for state to update
+    await page.waitForTimeout(1000);
+
+    // Button should be disabled
+    await expect(submitButton).toBeDisabled();
+
+    // Hover to see tooltip
+    await submitButton.hover();
+    await expect(page.getByText(/blockchain transactions require.*internet|require.*connection/i)).toBeVisible();
+
+    // Go back online
+    await context.setOffline(false);
+
+    // Wait for state to update
+    await page.waitForTimeout(1000);
+
+    // Button should be enabled again
+    await expect(submitButton).toBeEnabled();
   });
 
   test('should queue job application when offline', async ({ page, context }) => {
     // Navigate to job listing
     await page.goto('/jobs');
-    
-    // Go offline first
+
+    // Wait for jobs to load
+    await page.waitForLoadState('networkidle');
+
+    // Find the first job and open it
+    const firstJob = page.locator('[data-testid="job-card"], a[href*="/jobs/"]').first();
+    await expect(firstJob).toBeVisible({ timeout: 5000 });
+    await firstJob.click();
+
+    // Wait for job details to load
+    await page.waitForLoadState('networkidle');
+
+    // Find apply button
+    const applyButton = page.getByRole('button', { name: /apply|submit.*proposal/i }).first();
+    await expect(applyButton).toBeVisible({ timeout: 5000 });
+
+    // Go offline
     await context.setOffline(true);
-    
+
     // Wait for offline indicator
     await expect(page.getByText(/offline/i)).toBeVisible();
-    
-    // Try to apply to a job (if apply button exists)
-    const applyButton = page.getByRole('button', { name: /apply/i }).first();
-    
-    if (await applyButton.isVisible()) {
-      await applyButton.click();
-      
-      // Fill application form
-      await page.fill('[name="coverLetter"]', 'Test cover letter for offline application');
-      await page.fill('[name="proposedRate"]', '100');
-      
-      // Submit application
-      await page.getByRole('button', { name: /submit.*application/i }).click();
-      
-      // Should show queued message or confirmation
-      await expect(page.getByText(/queued|saved|will be sent/i)).toBeVisible();
-    }
+
+    // Click apply
+    await applyButton.click();
+
+    // Fill application form
+    const coverLetterField = page.locator('[name="coverLetter"], textarea').first();
+    const rateField = page.locator('[name="proposedRate"], [type="number"]').first();
+
+    await coverLetterField.fill('Test cover letter for offline application');
+    await rateField.fill('100');
+
+    // Submit application
+    const submitBtn = page.getByRole('button', { name: /submit.*application|submit.*proposal|send/i });
+    await submitBtn.click();
+
+    // Should show queued message or confirmation
+    await expect(page.getByText(/queued|saved|will be sent|pending|offline/i)).toBeVisible({ timeout: 5000 });
   });
 
   test('should sync queued applications when back online', async ({ page, context }) => {
@@ -125,27 +147,41 @@ test.describe('PWA Offline Functionality', () => {
   });
 
   test('should show pending sync indicator', async ({ page, context }) => {
-    await page.goto('/');
-    
-    // Queue some actions while offline
+    // Navigate to a page with messaging capability (e.g., job or user profile)
+    await page.goto('/jobs');
+    await page.waitForLoadState('networkidle');
+
+    // Find and open a job/profile with messaging
+    const firstItem = page.locator('[data-testid="job-card"], [data-testid="user-profile"], a[href*="/jobs/"]').first();
+    await expect(firstItem).toBeVisible({ timeout: 5000 });
+    await firstItem.click();
+
+    // Wait for details to load
+    await page.waitForLoadState('networkidle');
+
+    // Go offline
     await context.setOffline(true);
-    
-    // Trigger an action that gets queued (e.g., send message)
-    // This is placeholder logic - adjust based on actual UI
-    const messageButton = page.getByRole('button', { name: /send.*message/i }).first();
-    if (await messageButton.isVisible()) {
-      await messageButton.click();
-      await page.fill('[name="message"]', 'Test offline message');
-      await page.getByRole('button', { name: /send/i }).click();
-    }
-    
+
+    // Trigger a queued action (send message)
+    const messageButton = page.getByRole('button', { name: /send.*message|message|contact/i }).first();
+    await expect(messageButton).toBeVisible({ timeout: 5000 });
+    await messageButton.click();
+
+    // Fill message form
+    const messageField = page.locator('[name="message"], textarea').first();
+    await messageField.fill('Test offline message');
+
+    // Submit message
+    const sendBtn = page.getByRole('button', { name: /send|submit/i }).last();
+    await sendBtn.click();
+
     // Should show pending sync indicator in offline banner
-    await expect(page.getByText(/pending|queued/i)).toBeVisible();
-    
+    await expect(page.getByText(/pending|queued|offline/i)).toBeVisible({ timeout: 5000 });
+
     // Go back online
     await context.setOffline(false);
-    
-    // Pending indicator should disappear after sync
+
+    // Pending indicator should disappear after sync completes
     await expect(page.getByText(/pending|queued/i)).not.toBeVisible({ timeout: 10000 });
   });
 

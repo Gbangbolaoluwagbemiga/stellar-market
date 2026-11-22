@@ -47,7 +47,7 @@ const TARGET_TYPES = ["JOB", "USER", "MESSAGE"] as const;
 
 const createReportSchema = z.object({
   targetType: z.enum(TARGET_TYPES),
-  targetId: z.string().min(1),
+  targetId: z.string().min(1).max(255),
   reason: z.string().min(10, "Reason must be at least 10 characters").max(1000),
 });
 
@@ -145,7 +145,7 @@ router.post(
     const reportCount = await incrementReporterCount(reporterId);
 
     // ── 3. Determine if this report needs secondary review ─────────────────
-    const requiresReview = alreadySuspicious || reportCount > REPORT_WINDOW_LIMIT;
+    const requiresReview = alreadySuspicious || reportCount >= REPORT_WINDOW_LIMIT;
 
     // ── 4. Persist the report ──────────────────────────────────────────────
     const report = await prisma.report.create({
@@ -181,13 +181,21 @@ router.post(
       });
 
       if (pendingCount >= AUTO_FLAG_THRESHOLD) {
-        await prisma.user.update({
-          where: { id: targetId },
-          data: {
-            isFlagged: true,
-            flagReason: `Auto-flagged: ${pendingCount} pending community reports`,
-          },
-        });
+        try {
+          await prisma.user.update({
+            where: { id: targetId },
+            data: {
+              isFlagged: true,
+              flagReason: `Auto-flagged: ${pendingCount} pending community reports`,
+            },
+          });
+        } catch (error) {
+          // User doesn't exist - report is still valid, just skip auto-flag
+          // The report creation has already succeeded, so we log and continue
+          logger.warn(
+            `[ReportRoute] Unable to auto-flag non-existent user ${targetId}`,
+          );
+        }
       }
     }
 

@@ -216,7 +216,7 @@ describe("PATCH /api/milestones/:id/status", () => {
       .set(authHeader(FREELANCER_ID, "FREELANCER"))
       .send({ status: "APPROVED" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid status transition/);
     expect(milestoneMock.update).not.toHaveBeenCalled();
   });
@@ -233,7 +233,7 @@ describe("PATCH /api/milestones/:id/status", () => {
       .set(authHeader(CLIENT_ID, "CLIENT"))
       .send({ status: "APPROVED" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid status transition/);
     expect(milestoneMock.update).not.toHaveBeenCalled();
   });
@@ -277,7 +277,7 @@ describe("PATCH /api/milestones/:id/status", () => {
       .set(authHeader(CLIENT_ID, "CLIENT"))
       .send({ status: "APPROVED" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/Invalid status transition/);
     expect(milestoneMock.update).not.toHaveBeenCalled();
   });

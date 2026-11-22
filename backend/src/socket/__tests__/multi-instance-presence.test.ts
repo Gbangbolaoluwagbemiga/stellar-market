@@ -260,6 +260,10 @@ describe("cluster-aware socket presence across multiple backend instances", () =
     );
   });
 
+  // Waits out a real 2.3s presence-TTL expiry on top of spinning up two real
+  // HTTP/socket.io server instances; the default 5s timeout leaves little
+  // headroom under load (e.g. running in-band with the full suite), so this
+  // one gets an explicit, longer timeout.
   it("does not report a user online forever after their instance crashes without a clean disconnect", async () => {
     const instanceA = await startInstance();
     const instanceB = await startInstance();
@@ -294,5 +298,5 @@ describe("cluster-aware socket presence across multiple backend instances", () =
         data: expect.objectContaining({ userId, notificationId: "notif-crash-1" }),
       }),
     );
-  });
+  }, 15000);
 });

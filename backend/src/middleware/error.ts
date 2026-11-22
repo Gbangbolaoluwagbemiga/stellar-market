@@ -37,12 +37,24 @@ export const errorHandler = (
   } else if (err.name === 'PrismaClientKnownRequestError') {
     const prismaErr = err as unknown as { code?: string; meta?: { target?: unknown } };
     code = ErrorCodes.DATABASE_ERROR;
-    statusCode = 400;
     message = 'Database operation failed';
     details = {
       prismaCode: prismaErr.code,
       target: prismaErr.meta?.target,
     };
+
+    switch (prismaErr.code) {
+      case 'P2025':
+        statusCode = 404;
+        message = 'Record not found';
+        break;
+      case 'P2002':
+        statusCode = 409;
+        message = 'Unique constraint violation';
+        break;
+      default:
+        statusCode = 400;
+    }
   } else if (err.name === 'ContractSimulationError') {
     code = ErrorCodes.CONTRACT_SIMULATION_ERROR;
     statusCode = 422;

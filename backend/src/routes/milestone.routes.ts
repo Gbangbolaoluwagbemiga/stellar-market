@@ -18,6 +18,8 @@ import {
   getMilestonesQuerySchema,
   getMilestoneByIdParamSchema,
   getJobByIdParamSchema,
+  deliverableParamSchema,
+  deliverableDeleteParamSchema,
 } from "../schemas";
 
 const router = Router();
@@ -77,7 +79,29 @@ router.get(
     >;
     const skip = (page - 1) * limit;
 
-    const where: Prisma.MilestoneWhereInput = {};
+    // If a specific jobId is requested, verify the caller is a party to that job
+    // before returning any results for it.
+    if (jobId) {
+      const job = await prisma.job.findUnique({ where: { id: jobId } });
+      if (!job) {
+        return res.status(404).json({ error: "Job not found." });
+      }
+      const isParty =
+        job.clientId === req.userId || job.freelancerId === req.userId;
+      if (!isParty) {
+        return res
+          .status(403)
+          .json({ error: "Not authorized to view milestones for this job." });
+      }
+    }
+
+    // Always scope results to milestones belonging to jobs the caller is a
+    // client or freelancer on — preventing cross-user data leaks.
+    const where: Prisma.MilestoneWhereInput = {
+      job: {
+        OR: [{ clientId: req.userId }, { freelancerId: req.userId }],
+      },
+    };
     if (jobId) where.jobId = jobId;
     if (status) where.status = status;
 
@@ -227,6 +251,17 @@ router.put(
         .json({ error: "Not authorized to update this milestone." });
     }
 
+    if (updateData.amount != null) {
+      const siblings = await prisma.milestone.findMany({
+        where: { jobId: milestone.jobId, NOT: { id } },
+        select: { amount: true },
+      });
+      const otherTotal = siblings.reduce((s, m) => s + m.amount, 0);
+      if (milestone.job.budget != null && Number((otherTotal + updateData.amount).toFixed(7)) > Number(milestone.job.budget.toFixed(7))) {
+        return res.status(400).json({ error: "Total milestone amount exceeds job budget." });
+      }
+    }
+
     const updated = await prisma.milestone.update({
       where: { id },
       data: updateData,
@@ -304,7 +339,7 @@ router.patch(
       : (clientTransitions[currentStatus] || []);
 
     if (!allowedStatuses.includes(status)) {
-      return res.status(403).json({
+      return res.status(400).json({
         error: `Invalid status transition from ${currentStatus} to ${status} for ${isFreelancer ? 'Freelancer' : 'Client'}.`
       });
     }
@@ -377,6 +412,10 @@ router.put(
       return res.status(400).json({ error: "Milestone must be in progress to submit." });
     }
 
+    if (!milestone.job.freelancer.walletAddress) {
+      return res.status(400).json({ error: "Connect a wallet address before submitting this milestone." });
+    }
+
     const xdr = await ContractService.buildSubmitMilestoneTx(
       milestone.job.freelancer.walletAddress ?? "",
       milestone.job.contractJobId ?? "",
@@ -388,12 +427,6 @@ router.put(
 );
 
 // ─── Deliverable attachments ──────────────────────────────────────────────────
-
-const deliverableParamSchema = z.object({ id: z.string() });
-const deliverableDeleteParamSchema = z.object({
-  id: z.string(),
-  attachmentId: z.string(),
-});
 
 /**
  * POST /api/milestones/:id/deliverables
@@ -579,6 +612,10 @@ router.put(
 
     if (milestone.status !== "SUBMITTED") {
       return res.status(400).json({ error: "Milestone must be submitted to approve." });
+    }
+
+    if (!milestone.job.client.walletAddress) {
+      return res.status(400).json({ error: "Connect a wallet address before approving this milestone." });
     }
 
     const xdr = await ContractService.buildApproveMilestoneTx(

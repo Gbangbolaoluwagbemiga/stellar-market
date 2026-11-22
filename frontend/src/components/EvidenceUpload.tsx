@@ -256,25 +256,32 @@ export default function EvidenceUpload({
         // the last chunk. IDB writes are deferred because fake-indexeddb (and the
         // app's IDB connection) share the microtask queue with the fetch loop and
         // would otherwise deadlock mid-upload.
-        setTimeout(() => {
-          void persistUpload({
-            disputeId,
-            fileId: state.id,
-            name: state.name,
-            size: state.size,
-            mimeType: state.mimeType,
-            sha256,
-            sessionId,
-            totalChunks: state.totalChunks,
-            uploadedChunks: state.uploadedChunks,
-            anchorTxHash: state.anchorTxHash,
-            blob: file,
-          }).catch(() => undefined);
-        }, 0);
+        // Chain persist then remove to avoid race condition (#1648)
         updateFile(state.id, { status: "done", progress: 100, sessionId });
-        setTimeout(() => {
-          void removePersistedUpload(disputeId, state.id).catch(() => undefined);
-        }, 0);
+        void (async () => {
+          try {
+            await persistUpload({
+              disputeId,
+              fileId: state.id,
+              name: state.name,
+              size: state.size,
+              mimeType: state.mimeType,
+              sha256,
+              sessionId,
+              totalChunks: state.totalChunks,
+              uploadedChunks: state.uploadedChunks,
+              anchorTxHash: state.anchorTxHash,
+              blob: file,
+            });
+          } catch {
+            // Ignore persist errors
+          }
+          try {
+            await removePersistedUpload(disputeId, state.id);
+          } catch {
+            // Ignore remove errors
+          }
+        })();
       } catch (err) {
         const message =
           err instanceof Error ? err.message : "Upload failed. Retry.";

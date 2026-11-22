@@ -174,6 +174,11 @@ pub enum ReputationError {
     /// mistyped proposal id (issue #1434). Genuine authorization checks are
     /// unaffected and still return `NotAdmin`.
     ProposalNotFound = 31,
+    /// Rejected when `claim_stake` is asked to withdraw a non-positive amount, or
+    /// more than the reviewer's current `StakeBalance`. This used to reuse
+    /// `BelowMinStake`, which callers read as "raise your stake", not "fix the
+    /// claim amount" (issue #1548).
+    InvalidClaimAmount = 32,
 }
 
 #[contracttype]
@@ -203,8 +208,13 @@ pub struct UserReputation {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A stake threshold and its reputation multiplier.
+///
+/// `multiplier` is scaled by 100: 100 means 1.0x and 150 means 1.5x.
 pub struct StakeTier {
+    /// Minimum raw stake, in the token's smallest unit, for this tier.
     pub threshold: i128,
+    /// Reputation multiplier in hundredths (for example, 150 = 1.5x).
     pub multiplier: u32,
 }
 
@@ -220,9 +230,13 @@ pub struct UserReputationWithReferrer {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A referral bonus contribution already converted into reputation score.
 pub struct ReferralBonusRecord {
+    /// Pre-multiplied score contribution, not the raw referral value.
     pub amount: u64,
+    /// Weight applied when the contribution is included in decayed totals.
     pub weight: u64,
+    /// Unix timestamp at which this contribution was recorded.
     pub timestamp: u64,
 }
 
@@ -269,12 +283,20 @@ pub enum ScoreBadge {
     Elite = 3,
 }
 
+/// Outcome of a dispute, passed by the dispute contract to `apply_dispute_outcome`.
+/// Each variant shifts the affected user's score by a fixed amount, given by
+/// `DISPUTE_OUTCOME_WON_SCORE`, `DISPUTE_OUTCOME_LOST_SCORE`, and
+/// `DISPUTE_OUTCOME_MALICIOUS_FILING_SCORE`.
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum DisputeOutcome {
+    /// The user won the dispute. Applies `DISPUTE_OUTCOME_WON_SCORE` (+50).
     Won = 0,
+    /// The user lost the dispute. Applies `DISPUTE_OUTCOME_LOST_SCORE` (-100).
     Lost = 1,
+    /// The user filed the dispute in bad faith. Applies
+    /// `DISPUTE_OUTCOME_MALICIOUS_FILING_SCORE` (-250).
     MaliciousFiling = 2,
 }
 
@@ -293,12 +315,21 @@ pub struct AwardedBadge {
     pub awarded_at: u64,
 }
 
+/// Lifecycle state of a [`ReviewAppeal`].
+///
+/// An appeal starts as `Pending` when `appeal_review` files it. An admin then
+/// moves it to `Dismissed` or `ReviewRemoved` via `admin_resolve_appeal`, and
+/// removing the review through the admin removal path also sets `ReviewRemoved`.
+/// Once resolved, an appeal cannot be resolved again.
 #[contracttype]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum AppealStatus {
+    /// Filed and awaiting an admin decision.
     Pending = 0,
+    /// The admin rejected the appeal, and the review stands.
     Dismissed = 1,
+    /// The review was removed, either by upholding the appeal or through the admin removal path.
     ReviewRemoved = 2,
 }
 
@@ -322,7 +353,6 @@ pub enum AdminAction {
     Unpause,
     SetMinStake(i128),
     SetRateLimit(u32),
-    SetToken(Address),
     SetReferralBonus(u64),
     SetDecayRate(u32),
     SlashStake(Address, u64, u64), // loser, job_id, amount
@@ -366,7 +396,6 @@ enum DataKey {
     MinStake,
     RateLimit,
     LastReviewLedger(Address),
-    Token,
     Paused,
     Referrer(Address),
     ReferralStats(Address),
@@ -578,6 +607,19 @@ fn bump_instance_ttl(env: &Env) {
         .extend_ttl(MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
 }
 
+/// Applies linear annual reputation decay to `rep` in place.
+///
+/// The configured `decay_rate` (percent per year, default 0) is converted into a
+/// retained percentage of `max(0, 100 - decay_rate * elapsed_seconds /
+/// ONE_YEAR_IN_SECONDS)`, and both `total_score` and `total_weight` are scaled
+/// by it using integer arithmetic. The contract instance TTL is extended on
+/// every call.
+///
+/// `last_updated_ts` is refreshed to the current ledger timestamp even when the
+/// rate disables decay (`decay_rate == 0`) or saturates it (`decay_rate >= 100`);
+/// no score scaling happens in those cases. It is also refreshed after a normal
+/// decay calculation. When `last_updated_ts` is already at or ahead of the
+/// current timestamp, `rep` is left unchanged.
 pub fn apply_lazy_decay(env: &Env, rep: &mut UserReputation) {
     env.storage()
         .instance()
@@ -1156,6 +1198,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::ReferralBonus, &bonus);
@@ -1262,6 +1305,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if decay_rate > effective_max_decay_rate(&env) {
             return Err(ReputationError::DecayRateTooHigh);
         }
@@ -1292,6 +1336,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if rate > MAX_DECAY_RATE_HARD_CEILING {
             return Err(ReputationError::DecayRateTooHigh);
         }
@@ -1447,6 +1492,7 @@ impl ReputationContract {
         if !is_signer(&env, &signer) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
 
         env.storage()
             .instance()
@@ -1603,6 +1649,27 @@ impl ReputationContract {
             .unwrap_or(0)
     }
 
+    /// Get the current referral bonus configuration.
+    ///
+    /// Returns the configured bonus rating credited to a referrer when their
+    /// referee triggers `process_referral_bonus`, or `DEFAULT_REFERRAL_BONUS`
+    /// (5) if unset.
+    pub fn get_referral_bonus(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReferralBonus)
+            .unwrap_or(DEFAULT_REFERRAL_BONUS)
+    }
+
+    /// Get the configured maximum decay rate ceiling.
+    ///
+    /// Returns the super-admin configured upper bound for `decay_rate`, or
+    /// `MAX_DECAY_RATE` (20) if unset. This ceiling itself is capped at
+    /// `MAX_DECAY_RATE_HARD_CEILING` (50) by `set_max_decay_rate`.
+    pub fn get_max_decay_rate(env: Env) -> u32 {
+        effective_max_decay_rate(&env)
+    }
+
     /// Set the minimum stake weight threshold (admin/signer only).
     /// Reviews submitted with stake_weight below this value are rejected with StakeTooLow.
     pub fn set_min_stake_weight(
@@ -1614,6 +1681,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MinStakeWeight, &weight);
@@ -1633,6 +1701,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::BannedUser(user.clone()), &true);
@@ -1652,6 +1721,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         env.storage()
             .instance()
             .remove(&DataKey::BannedUser(user.clone()));
@@ -1673,6 +1743,19 @@ impl ReputationContract {
         proposer.require_auth();
         if !is_signer(&env, &proposer) {
             return Err(ReputationError::NotAdmin);
+        }
+
+        // Validate payloads before opening the proposal so signers never approve
+        // an action that is already invalid. `execute_proposal` repeats these
+        // checks as a defense-in-depth measure (issue #1818).
+        match &action {
+            AdminAction::SetDecayRate(rate) if *rate > effective_max_decay_rate(&env) => {
+                return Err(ReputationError::DecayRateTooHigh);
+            }
+            AdminAction::SetStakeTiers(tiers) if tiers.len() > MAX_STAKE_TIERS => {
+                return Err(ReputationError::TooManyStakeTiers);
+            }
+            _ => {}
         }
 
         let mut count: u64 = env
@@ -1800,9 +1883,6 @@ impl ReputationContract {
             }
             AdminAction::SetRateLimit(ledgers) => {
                 env.storage().instance().set(&DataKey::RateLimit, &ledgers);
-            }
-            AdminAction::SetToken(token) => {
-                env.storage().instance().set(&DataKey::Token, &token);
             }
             AdminAction::SetReferralBonus(bonus) => {
                 env.storage()
@@ -2062,6 +2142,11 @@ impl ReputationContract {
         env.storage().persistent().set(&list_key, &endorsers);
         bump_endorsement_ttl(&env, &target, &skill, &endorser);
 
+        env.events().publish(
+            (symbol_short!("reput"), symbol_short!("endorsed")),
+            (endorser, target, skill),
+        );
+
         Ok(())
     }
 
@@ -2101,6 +2186,7 @@ impl ReputationContract {
         if !is_signer(&env, &admin) {
             return Err(ReputationError::NotAdmin);
         }
+        require_not_paused(&env)?;
         if tiers.len() > MAX_STAKE_TIERS {
             return Err(ReputationError::TooManyStakeTiers);
         }
@@ -2143,6 +2229,21 @@ impl ReputationContract {
             .unwrap_or(0)
     }
 
+    /// Returns the token address that denominates the user's current stake.
+    /// Returns `None` if the user has no recorded stake token.
+    /// This is the token paired with [`Self::get_stake_balance`].
+    pub fn get_stake_token(env: Env, user: Address) -> Option<Address> {
+        env.storage().persistent().get(&DataKey::StakeToken(user))
+    }
+
+    /// Returns the stake-adjusted average rating for `user` on a **0–10,000** scale.
+    ///
+    /// The base score is the time-decayed weighted mean of all reviews, normalised
+    /// to 0–10,000. That base is then multiplied by the user's stake multiplier
+    /// (see [`Self::get_stake_multiplier`]) and capped at 10,000.
+    ///
+    /// Returns `Ok(0)` when every review has fully decayed (total weight == 0),
+    /// treating the user as though they have no reputation.
     pub fn get_average_rating(env: Env, user: Address) -> Result<u64, ReputationError> {
         let multiplier = Self::get_stake_multiplier(env.clone(), user.clone());
 
@@ -2290,7 +2391,7 @@ impl ReputationContract {
         let balance: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
 
         if balance < amount || amount <= 0 {
-            return Err(ReputationError::BelowMinStake);
+            return Err(ReputationError::InvalidClaimAmount);
         }
 
         // Lockup enforcement: reject claims where the stake is younger than
@@ -2313,6 +2414,9 @@ impl ReputationContract {
         let new_balance = balance - amount;
         if new_balance > 0 {
             env.storage().persistent().set(&balance_key, &new_balance);
+            env.storage()
+                .persistent()
+                .extend_ttl(&balance_key, MIN_TTL_THRESHOLD, MIN_TTL_EXTEND_TO);
         } else {
             env.storage().persistent().remove(&balance_key);
         }
@@ -2692,6 +2796,62 @@ impl ReputationContract {
         Ok(())
     }
 
+    /// Get the configured stake tier schedule. Returns an empty vec if no tiers are set.
+    pub fn get_stake_tiers(env: Env) -> Vec<StakeTier> {
+        env.storage()
+            .instance()
+            .get(&DataKey::StakeTiers)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Check if a user is banned. Banned users are excluded from leaderboard results.
+    pub fn is_banned(env: Env, user: Address) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::BannedUser(user))
+            .unwrap_or(false)
+    }
+
+    /// Get the referral bonus history for a user. Returns an empty vec if no bonuses exist.
+    /// Mirrors the pattern of get_reviews for consistency across similar data structures.
+    pub fn get_referral_bonuses(env: Env, user: Address) -> Vec<ReferralBonusRecord> {
+        let bonuses_key = DataKey::ReferralBonusList(user);
+        let bonuses: Option<Vec<ReferralBonusRecord>> = env.storage().persistent().get(&bonuses_key);
+        match bonuses {
+            Some(list) => {
+                env.storage().persistent().extend_ttl(
+                    &bonuses_key,
+                    MIN_TTL_THRESHOLD,
+                    MIN_TTL_EXTEND_TO,
+                );
+                list
+            }
+            None => Vec::new(&env),
+        }
+    }
+
+    /// Get when a reviewer's staked tokens unlock. Returns the timestamp when the
+    /// stake lockup period ends, or 0 if no lockup is active (no stake or already expired).
+    /// Use this to show "stake unlocks in N days" in wallet/UI integrations.
+    pub fn get_stake_lockup_expiry(env: Env, user: Address) -> u64 {
+        let lockup_key = DataKey::StakeLockupTs(user);
+        let staked_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&lockup_key)
+            .unwrap_or(0u64);
+
+        if staked_at == 0 {
+            return 0;
+        }
+
+        staked_at.saturating_add(STAKE_LOCKUP_SECONDS)
+    }
+
+    /// Look up an existing review appeal by its composite key `(reviewer, reviewee, job_id)`.
+    ///
+    /// Returns `Err(AppealNotFound)` if no appeal has been filed for that
+    /// `(reviewer, reviewee, job_id)` triple.
     pub fn get_review_appeal(
         env: Env,
         reviewer: Address,

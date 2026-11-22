@@ -26,11 +26,13 @@ import {
   disputeIdParamSchema,
   initRaiseDisputeSchema,
   queryDisputesSchema,
+  queryDisputeHistorySchema,
   resolveDisputeSchema,
   webhookPayloadSchema,
   initiateEvidenceSessionSchema,
   evidenceSessionParamSchema,
   evidenceChunkParamSchema,
+  evidenceIdParamSchema,
 } from "../schemas/dispute";
 import {
   assembleAndVerify,
@@ -142,28 +144,21 @@ function omitWalletAddress<T extends { walletAddress: unknown }>(
 router.get(
   "/history",
   authenticate,
+  validate({ query: queryDisputeHistorySchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const {
-      filter = "all",
-      sortBy = "recent",
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const query = req.query as unknown as {
+      filter: "all" | "initiated" | "involved";
+      sortBy: "recent" | "oldest";
+      page: number;
+      limit: number;
+    };
     const userId = req.userId!;
-
-    const rawLimit = Number(limit);
-    const rawPage = Number(page);
-    if (!Number.isFinite(rawLimit) || rawLimit < 1) {
-      return res.status(400).json({ error: "limit must be a positive integer" });
-    }
-    const safeLimit = Math.min(rawLimit, MAX_PAGE_SIZE);
-    const safePage = Math.max(1, Number.isFinite(rawPage) ? rawPage : 1);
 
     const disputes = await DisputeService.getUserDisputeHistory(
       userId,
-      filter as "all" | "initiated" | "involved",
-      sortBy as "recent" | "oldest",
-      { page: safePage, limit: safeLimit },
+      query.filter,
+      query.sortBy,
+      { page: query.page, limit: query.limit },
     );
 
     res.setHeader("X-Max-Page-Size", String(MAX_PAGE_SIZE));
@@ -181,7 +176,11 @@ router.get(
   authenticate,
   validate({ query: queryDisputesSchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
-    const query = req.query as unknown as { page: number; limit: number };
+    const query = req.query as unknown as {
+      status?: DisputeStatus;
+      page: number;
+      limit: number;
+    };
     const userId = req.userId!;
     const role = req.userRole;
 
@@ -199,7 +198,7 @@ router.get(
     }
 
     const result = await DisputeService.getDisputes(
-      { status: DisputeStatus.OPEN, userFilter },
+      { status: query.status ?? DisputeStatus.OPEN, userFilter },
       { page: query.page, limit: query.limit },
     );
 
@@ -324,7 +323,8 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const disputeId = req.params.id as string;
     const cursor = req.query.cursor as string | undefined;
-    const limit = Math.min(Number(req.query.limit) || 20, 100);
+    const rawLimit = Number(req.query.limit) || 20;
+    const limit = Math.min(Math.max(rawLimit, 1), 100);
 
     const dispute = await DisputeService.getDisputeById(disputeId);
     if (!dispute) {
@@ -487,9 +487,31 @@ router.put(
  */
 router.get(
   "/:id/stats",
+  authenticate,
   validate({ params: disputeIdParamSchema }),
-  asyncHandler(async (req: Request, res: Response) => {
-    const stats = await DisputeService.getVoteStats(req.params.id as string);
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const disputeId = req.params.id as string;
+    const dispute = await DisputeService.getDisputeById(disputeId);
+    
+    if (!dispute) {
+      res.status(404).json({ error: "Dispute not found" });
+      return;
+    }
+
+    const isParticipant =
+      dispute.clientId === req.userId ||
+      dispute.freelancerId === req.userId ||
+      dispute.initiatorId === req.userId;
+    const isAdmin = req.userRole === UserRole.ADMIN;
+
+    if (!isParticipant && !isAdmin) {
+      res.status(403).json({
+        error: "Access denied. Only dispute participants or admins can view vote statistics.",
+      });
+      return;
+    }
+
+    const stats = await DisputeService.getVoteStats(disputeId);
     res.json(stats);
   }),
 );
@@ -576,6 +598,7 @@ router.post(
     }
 
     const attachments = [];
+    const failed = [];
 
     if (!isEvidenceStorageConfigured()) {
       for (const f of files) fs.unlinkSync(f.path);
@@ -590,6 +613,10 @@ router.post(
 
       if (!validation.valid) {
         fs.unlinkSync(file.path);
+        failed.push({
+          filename: file.originalname,
+          reason: validation.error || "Invalid MIME type",
+        });
         continue;
       }
 
@@ -605,6 +632,10 @@ router.post(
       const clientSha256 = hashes[i] || null;
       if (clientSha256 && clientSha256 !== computedSha256) {
         fs.unlinkSync(file.path);
+        failed.push({
+          filename: file.originalname,
+          reason: "Hash mismatch: computed SHA-256 does not match client-provided hash",
+        });
         continue;
       }
 
@@ -613,6 +644,10 @@ router.post(
         const txExists = await verifyAnchorTxOnHorizon(candidateAnchorTx);
         if (!txExists) {
           fs.unlinkSync(file.path);
+          failed.push({
+            filename: file.originalname,
+            reason: "Anchor transaction not found on Horizon",
+          });
           continue;
         }
       }
@@ -657,7 +692,16 @@ router.post(
       });
     }
 
-    res.status(201).json({ attachments });
+    // Return 400 if all files failed, partial success if at least one succeeded
+    if (attachments.length === 0 && failed.length > 0) {
+      return res.status(400).json({
+        error: "All uploaded files failed validation",
+        attachments: [],
+        failed,
+      });
+    }
+
+    res.status(201).json({ attachments, failed });
   }),
 );
 
@@ -750,6 +794,15 @@ router.get(
     if (!manifest) {
       return res.status(404).json({ error: "Upload session not found" });
     }
+
+    const access = await assertDisputeParticipant(
+      manifest.disputeId,
+      req.userId!,
+    );
+    if (!access.allowed) {
+      return res.status(access.status).json({ error: access.error });
+    }
+
     return res.status(200).json({
       sessionId,
       totalChunks: manifest.totalChunks,
@@ -942,6 +995,17 @@ router.get(
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const disputeId = req.params.id as string;
 
+    const access = await assertDisputeViewerAccess(
+      disputeId,
+      req.userId!,
+      req.userRole,
+    );
+
+    if (!access.allowed) {
+      res.status(access.status).json({ error: access.error });
+      return;
+    }
+
     const attachments = await prisma.attachment.findMany({
       where: { disputeId },
       include: {
@@ -980,6 +1044,7 @@ router.get(
 router.get(
   "/:id/evidence/:evidenceId/download",
   authenticate,
+  validate({ params: evidenceIdParamSchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const attachment = await prisma.attachment.findFirst({
       where: {
@@ -1036,7 +1101,21 @@ router.get(
 router.get(
   "/:id/evidence/:evidenceId/verify",
   authenticate,
+  validate({ params: evidenceIdParamSchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
+    const disputeId = req.params.id as string;
+
+    const access = await assertDisputeViewerAccess(
+      disputeId,
+      req.userId!,
+      req.userRole,
+    );
+
+    if (!access.allowed) {
+      res.status(access.status).json({ error: access.error });
+      return;
+    }
+
     const attachment = await prisma.attachment.findFirst({
       where: {
         id: req.params.evidenceId as string,
@@ -1120,6 +1199,19 @@ router.get(
 
     if (!dispute) {
       res.status(404).json({ error: "Dispute not found" });
+      return;
+    }
+
+    const isParticipant =
+      dispute.clientId === req.userId ||
+      dispute.freelancerId === req.userId ||
+      dispute.initiatorId === req.userId;
+    const isAdmin = req.userRole === UserRole.ADMIN;
+
+    if (!isParticipant && !isAdmin) {
+      res.status(403).json({
+        error: "Access denied. Only dispute participants or admins can view the tally.",
+      });
       return;
     }
 

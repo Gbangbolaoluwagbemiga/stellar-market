@@ -54,6 +54,8 @@ export function getNotificationPriority(type: NotificationType): NotificationPri
     case "NEW_MESSAGE":
     case "APPLICATION_ACCEPTED":
     case "APPLICATION_REJECTED":
+    case "JOB_REMOVED":
+    case "JOB_EXPIRED":
       return NotificationPriority.HIGH;
 
     case "JOB_APPLIED":

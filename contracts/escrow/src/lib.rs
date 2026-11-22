@@ -128,6 +128,21 @@ pub enum AdminAction {
     /// Emergency withdrawal: recover escrowed funds from a specific job to a recipient address.
     /// Only executable when the contract is paused. Requires multi-sig approval.
     EmergencyWithdraw(u64, Address),
+    /// Reconfigure reputation-weighted governance (issue #899 follow-up).
+    /// Routed through the standard multisig flow like other sensitive admin
+    /// actions: it requires threshold signer approvals and is subject to the
+    /// 48-hour timelock, so no single compromised or rogue signer can
+    /// unilaterally reconfigure governance parameters — including the
+    /// reputation contract address that every vote's weight is sourced from.
+    ConfigureGovernance(
+        Address, // reputation contract providing snapshot voting weight
+        u64,     // voting_period_secs
+        u64,     // timelock_secs
+        u64,     // grace_secs
+        u128,    // quorum_votes
+        u32,     // pass_threshold_bps
+        u64,     // min_proposer_weight
+    ),
 }
 
 /// A pending multi-sig proposal. Executed when `approvals.len() >= threshold`.
@@ -350,6 +365,7 @@ pub struct Job {
 
 pub(crate) const MAX_FEE_BPS: u32 = 500; // 5%
 const MAX_MILESTONES: u32 = 50;
+const REFUND_SPLIT_PERCENT_DENOMINATOR: i128 = 100;
 
 /// A formal proposal to revise the milestones and total budget of an active job.
 #[contracttype]
@@ -441,7 +457,6 @@ pub struct SubAssignment {
 enum DataKey {
     Job(u64),
     JobCount,
-    Admin, // Legacy single admin
     Paused,
     AllowedTokens,
     RevisionProposal(u64),
@@ -484,12 +499,31 @@ const TWAP_SAMPLE_LEDGERS: u32 = 10;
 
 /// Default proposal expiry: 7 days in seconds.
 const DEFAULT_PROPOSAL_EXPIRY_SECS: u64 = 7 * 24 * 3600;
+/// Time after a milestone is submitted before the client's inactivity auto-approval
+/// can be scheduled (7 days).
 const INACTIVITY_THRESHOLD_SECS: u64 = 7 * 24 * 3600;
+/// Grace period between scheduling an inactivity auto-approval and its execution,
+/// during which the client can still act on the milestone (3 days).
 const INACTIVITY_GRACE_SECS: u64 = 3 * 24 * 3600;
+/// Time lock on multi-sig `Pause`, `SetTreasury`, and `ConfigureGovernance` actions
+/// before they can execute (48 hours).
 const MULTISIG_TIME_LOCK_SECS: u64 = 48 * 60 * 60;
+/// Lifetime of a multi-sig proposal: once this many seconds have passed since creation,
+/// it can no longer be executed and may be archived (7 days).
 const PROPOSAL_TTL: u64 = 7 * 24 * 60 * 60;
 
+/// Number of ledgers a consumed nonce is kept in temporary storage, which bounds
+/// the replay-protection window.
 const NONCE_EXPIRY_LEDGERS: u32 = 3;
+
+/// Returns the configured revision-proposal expiry in seconds, or the default
+/// when none was set during `initialize`.
+fn proposal_expiry_secs(env: &Env) -> u64 {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProposalExpiry)
+        .unwrap_or(DEFAULT_PROPOSAL_EXPIRY_SECS)
+}
 
 fn get_job_key(job_id: u64) -> DataKey {
     DataKey::Job(job_id)
@@ -498,6 +532,11 @@ fn get_job_key(job_id: u64) -> DataKey {
 /// Returns the payment token for a milestone, falling back to the job-level default.
 fn resolve_milestone_token(milestone: &Milestone, job: &Job) -> Address {
     milestone.token.clone().unwrap_or_else(|| job.token.clone())
+}
+
+fn refund_split_client_amount(amount: i128, pct_client: u32) -> i128 {
+    let pct = pct_client.min(REFUND_SPLIT_PERCENT_DENOMINATOR as u32) as i128;
+    (amount * pct) / REFUND_SPLIT_PERCENT_DENOMINATOR
 }
 
 /// Transfer `amount` of `token` from this contract to the appropriate party according
@@ -531,8 +570,7 @@ fn apply_dispute_distribution(
             }
         }
         DisputeResolution::RefundSplit(pct_client) => {
-            let pct = if *pct_client > 100 { 100 } else { *pct_client } as i128;
-            let ca = (amount * pct) / 100;
+            let ca = refund_split_client_amount(amount, *pct_client);
             let fa = amount - ca;
             if ca > 0 {
                 tc.transfer(&contract, client, &ca);
@@ -946,6 +984,22 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Add a token to the list of allowed payment tokens for jobs.
+    ///
+    /// # Authorization
+    /// Only registered multi-sig signers may call this function. The caller must sign the invocation.
+    ///
+    /// # Arguments
+    /// * `admin` — A registered signer authorizing this action
+    /// * `token` — Address of the token contract to allow
+    ///
+    /// # Behavior
+    /// - If the token is already in the allowed list, this is a no-op (idempotent)
+    /// - Emits a `token_allowed` event when a new token is added
+    ///
+    /// # Errors
+    /// * `ContractPaused` — the contract is currently paused
+    /// * `NotAdmin` — caller is not a registered signer
     pub fn add_allowed_token(env: Env, admin: Address, token: Address) -> Result<(), EscrowError> {
         require_not_paused(&env)?;
 
@@ -972,6 +1026,22 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Remove a token from the list of allowed payment tokens for jobs.
+    ///
+    /// # Authorization
+    /// Only registered multi-sig signers may call this function. The caller must sign the invocation.
+    ///
+    /// # Arguments
+    /// * `admin` — A registered signer authorizing this action
+    /// * `token` — Address of the token contract to revoke
+    ///
+    /// # Behavior
+    /// - If the token is not in the allowed list, this is a no-op (idempotent)
+    /// - Emits a `token_revoked` event when a token is removed
+    ///
+    /// # Errors
+    /// * `ContractPaused` — the contract is currently paused
+    /// * `NotAdmin` — caller is not a registered signer
     pub fn remove_allowed_token(
         env: Env,
         admin: Address,
@@ -1002,6 +1072,10 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Retrieve the list of tokens that are currently allowed for payment in jobs.
+    ///
+    /// # Returns
+    /// A vector of token contract addresses. Returns an empty vector if no tokens have been allowed.
     pub fn get_allowed_tokens(env: Env) -> Vec<Address> {
         env.storage()
             .instance()
@@ -1041,6 +1115,8 @@ impl EscrowContract {
         admin: Address,
         oracle: Address,
     ) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+
         admin.require_auth();
         if !is_signer(&env, &admin) {
             return Err(EscrowError::NotAdmin);
@@ -1060,6 +1136,8 @@ impl EscrowContract {
         admin: Address,
         dispute_contract: Address,
     ) -> Result<(), EscrowError> {
+        require_not_paused(&env)?;
+
         admin.require_auth();
         if !is_signer(&env, &admin) {
             return Err(EscrowError::NotAdmin);
@@ -1073,6 +1151,17 @@ impl EscrowContract {
     /// Return the registered dispute contract address, if any.
     pub fn get_dispute_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::DisputeContract)
+    }
+
+    /// Return the maximum number of milestones a job or revision proposal may contain.
+    pub fn get_max_milestones(_env: Env) -> u32 {
+        MAX_MILESTONES
+    }
+
+    /// Return the number of seconds a revision proposal stays pending before it can be
+    /// expired. Falls back to the 7-day default when no expiry was configured.
+    pub fn get_proposal_expiry(env: Env) -> u64 {
+        proposal_expiry_secs(&env)
     }
 
     /// Called by the registered dispute contract to transition a job to the Disputed state
@@ -1118,6 +1207,20 @@ impl EscrowContract {
             .get(&DataKey::RateSnapshot(job_id))
     }
 
+    /// Open a multi-sig proposal for an administrative action. The proposer's
+    /// address is recorded as the first approval; when the threshold is 1 and no
+    /// time-lock applies, the action executes immediately (so execution errors
+    /// below can surface from this call too).
+    ///
+    /// # Authorization
+    /// `proposer` must sign the invocation and already be in the multi-sig
+    /// signer set.
+    ///
+    /// # Errors
+    /// * `SignerNotFound`     — `proposer` is not a registered signer
+    /// * `GovernanceRequired` — governance is enabled and the action is one it owns
+    /// * `InvalidFee`         — `SetFeeBps` payload exceeds `MAX_FEE_BPS`
+    /// * execution errors from `execute_proposal_internal` when auto-executing
     pub fn propose_admin_action(
         env: Env,
         proposer: Address,
@@ -1160,6 +1263,7 @@ impl EscrowContract {
             AdminAction::Pause | AdminAction::SetTreasury(_) => {
                 now.saturating_add(MULTISIG_TIME_LOCK_SECS)
             }
+            AdminAction::ConfigureGovernance(..) => now.saturating_add(MULTISIG_TIME_LOCK_SECS),
             _ => now,
         };
 
@@ -1201,6 +1305,36 @@ impl EscrowContract {
         Ok(count)
     }
 
+    /// Return a multi-sig proposal by id, whether it is pending or archived.
+    pub fn get_multisig_proposal(env: Env, proposal_id: u64) -> Option<MultiSigProposal> {
+        load_proposal(&env, proposal_id)
+    }
+
+    /// Return the timestamp at which a multi-sig proposal becomes executable.
+    ///
+    /// Returns `None` if the proposal has no timelock entry or is unknown.
+    pub fn get_execution_not_before(env: Env, proposal_id: u64) -> Option<u64> {
+        env.storage()
+            .instance()
+            .get(&DataKey::MultiSigExecutionNotBefore(proposal_id))
+    }
+
+    /// Record an additional approval on a pending multi-sig proposal. When the
+    /// approval count reaches the threshold and the time-lock has elapsed, the
+    /// proposal executes immediately (so execution errors below can surface from
+    /// this call too).
+    ///
+    /// # Authorization
+    /// `approver` must sign the invocation and already be in the multi-sig
+    /// signer set; it must not have approved this proposal before.
+    ///
+    /// # Errors
+    /// * `SignerNotFound`          — `approver` is not a registered signer
+    /// * `MultiSigProposalNotFound` — no proposal with this ID
+    /// * `MultiSigAlreadyExecuted`  — the proposal has already been executed
+    /// * `MultiSigAlreadyApproved`  — `approver` has already approved it
+    /// * `ProposalExpired`          — the proposal is past `PROPOSAL_TTL`
+    /// * execution errors from `execute_proposal_internal` when threshold is met
     pub fn approve_admin_action(
         env: Env,
         approver: Address,
@@ -1255,6 +1389,25 @@ impl EscrowContract {
         Ok(())
     }
 
+    /// Execute a proposal that has already collected the approval threshold.
+    /// Delegates to `execute_proposal_internal`, which enacts the action and
+    /// archives the proposal.
+    ///
+    /// # Authorization
+    /// `caller` must sign the invocation and already be in the multi-sig signer
+    /// set. The proposal itself must independently satisfy its threshold and
+    /// time-lock; being a signer is not enough on its own.
+    ///
+    /// # Errors
+    /// * `SignerNotFound`          — `caller` is not a registered signer
+    /// * `MultiSigProposalNotFound` — no proposal with this ID
+    /// * `MultiSigAlreadyExecuted`  — the proposal has already been executed
+    /// * `ProposalExpired`          — the proposal is past `PROPOSAL_TTL`
+    /// * `Unauthorized`             — approvals are below the threshold
+    /// * `ProposalTimeLockActive`   — the time-lock has not elapsed yet
+    /// * `GovernanceRequired`       — governance is enabled and owns this action
+    /// * action-specific errors (e.g. `InvalidFee`, `InvalidThreshold`,
+    ///   `ContractNotPaused`, `JobNotFound`) raised while enacting the action
     pub fn execute_proposal(
         env: Env,
         caller: Address,
@@ -1349,6 +1502,13 @@ impl EscrowContract {
             return Err(EscrowError::GovernanceRequired);
         }
 
+        // Event contract: every successful action is represented by the generic
+        // `msig/executed` event below. Dedicated domain events are additionally
+        // emitted for Pause, Unpause, EmergencyWithdraw, and ConfigureGovernance.
+        // SetFeeBps, SetTreasury, AddSigner, RemoveSigner, ChangeThreshold, and
+        // RotateSigner intentionally have no dedicated event; indexers should
+        // decode those actions from the generic event rather than expect a
+        // second action-specific event schema.
         match proposal.action.clone() {
             AdminAction::Pause => {
                 env.storage().instance().set(&DataKey::Paused, &true);
@@ -1378,6 +1538,44 @@ impl EscrowContract {
                 env.storage()
                     .instance()
                     .set(&symbol_short!("TRE"), &treasury);
+            }
+            AdminAction::ConfigureGovernance(
+                reputation,
+                voting_period_secs,
+                timelock_secs,
+                grace_secs,
+                quorum_votes,
+                pass_threshold_bps,
+                min_proposer_weight,
+            ) => {
+                // Defense in depth: re-validate at execution time, exactly as
+                // `SetFeeBps` does, so a proposal can never enact parameters
+                // that would be rejected if proposed today. EscrowError is at
+                // the SDK's variant cap, so this reuses the nearest generic
+                // variant — the same pattern `create_job` uses for its
+                // self-employment rejection. Callers proposing through
+                // `configure_governance` get the precise `GovError::InvalidParam`
+                // before any proposal is created.
+                if voting_period_secs == 0 || pass_threshold_bps == 0 || pass_threshold_bps > 10_000
+                {
+                    return Err(EscrowError::Unauthorized);
+                }
+                let config = governance::GovernanceConfig {
+                    reputation: reputation.clone(),
+                    voting_period_secs,
+                    timelock_secs,
+                    grace_secs,
+                    quorum_votes,
+                    pass_threshold_bps,
+                    min_proposer_weight,
+                };
+                env.storage()
+                    .instance()
+                    .set(&governance::GovKey::Config, &config);
+                env.events().publish(
+                    (symbol_short!("gov"), symbol_short!("config")),
+                    (proposal.proposer.clone(), reputation, voting_period_secs),
+                );
             }
             AdminAction::AddSigner(signer) => {
                 let mut signers: Vec<Address> = env
@@ -1930,8 +2128,8 @@ impl EscrowContract {
     ///
     /// For multi-token jobs (created via `create_multi_token_job`), this function
     /// automatically collects all non-default token amounts in addition to the default
-    /// token. Oracle validation applies to the default token only; use
-    /// `validate_token_value` separately for non-default tokens if required.
+    /// token. Oracle validation applies to the default token only; non-default token
+    /// amounts are currently not value-validated.
     pub fn fund_job(
         env: Env,
         job_id: u64,
@@ -2217,7 +2415,9 @@ impl EscrowContract {
 
     /// Pure payout breakdown for a dispute resolution. No state is read or
     /// written — safe for frontend preview without a transaction.
-    /// All four amounts always sum to `escrow_amount` (no dust).
+    /// All four amounts sum to `escrow_amount` (no dust) for every outcome
+    /// except [`DisputeResolution::Escalate`], which returns an all-zero
+    /// breakdown since it settles nothing.
     pub fn calculate_payout(
         _env: Env,
         escrow_amount: i128,
@@ -2252,8 +2452,7 @@ impl EscrowContract {
                 }
             }
             DisputeResolution::RefundSplit(pct_client) => {
-                let pct = if pct_client > 100 { 100 } else { pct_client } as i128;
-                let client_amount = (remaining * pct) / 100;
+                let client_amount = refund_split_client_amount(remaining, pct_client);
                 PayoutBreakdown {
                     client: client_amount,
                     freelancer: remaining - client_amount,
@@ -2532,6 +2731,30 @@ impl EscrowContract {
         );
 
         Ok(total_released)
+    }
+
+    /// Return when the milestone was submitted, or `None` if it has not been submitted
+    /// or the submission timestamp is no longer active.
+    pub fn get_milestone_submitted_at(
+        env: Env,
+        job_id: u64,
+        milestone_id: u32,
+    ) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MilestoneSubmittedAt(job_id, milestone_id))
+    }
+
+    /// Return when inactivity auto-approval will become eligible, or `None` if no
+    /// inactivity timer is currently active for the milestone.
+    pub fn get_inactivity_auto_approve_at(
+        env: Env,
+        job_id: u64,
+        milestone_id: u32,
+    ) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::InactivityAutoApproveAt(job_id, milestone_id))
     }
 
     /// After a milestone is submitted, allow either party to trigger an inactivity-based
@@ -3057,9 +3280,7 @@ impl EscrowContract {
         if job.client != client {
             return Err(EscrowError::Unauthorized);
         }
-        if job.status == JobStatus::Disputed {
-            return Err(EscrowError::InvalidStatus);
-        }
+        require_state_not_disputed(&job)?;
 
         let mut milestones = job.milestones.clone();
         let milestone = milestones
@@ -3266,6 +3487,9 @@ impl EscrowContract {
         // Refund the remaining escrowed amount (total minus already-approved milestones).
         // Pay already-approved milestones to the freelancer, since payment only happens in complete_job.
         // For multi-token jobs, operate per distinct token.
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let default_approved: i128 = job
             .milestones
             .iter()
@@ -3279,6 +3503,7 @@ impl EscrowContract {
         }
         if default_refund > 0 {
             default_tc.transfer(&env.current_contract_address(), &client, &default_refund);
+            refund_by_token.set(job.token.clone(), default_refund);
         }
 
         // Non-default tokens.
@@ -3298,9 +3523,9 @@ impl EscrowContract {
             }
             if tb_refund > 0 {
                 tc.transfer(&env.current_contract_address(), &client, &tb_refund);
+                refund_by_token.set(tb.token.clone(), tb_refund);
             }
         }
-        let refund = default_refund; // used in event below
 
         // Cancel any active sub-assignments for milestones that were not approved.
         // Unapproved milestones are refunded to the client, so sub-freelancers
@@ -3329,11 +3554,34 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit JobCancelled event with job_id, client address, and refund_amount.
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("cancelled")),
-            (job_id, client, job.freelancer, refund),
-        );
+        // Emit JobCancelled event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 0 {
+            // No refund was issued (all funds were approved and paid to freelancer)
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("cancelled")),
+                (job_id, client.clone(), job.freelancer, 0_i128),
+            );
+        } else if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("cancelled")),
+                (job_id, client.clone(), job.freelancer, refund_amount),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), symbol_short!("cancelled")),
+                        (job_id, token_addr, client.clone(), job.freelancer.clone(), refund_amount),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3377,6 +3625,9 @@ impl EscrowContract {
         }
 
         // Calculate refund: total minus already-approved milestone amounts (default token).
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let default_approved: i128 = job
             .milestones
             .iter()
@@ -3411,6 +3662,7 @@ impl EscrowContract {
         // Transfer default-token refund to client.
         if refund > 0 {
             default_tc.transfer(&env.current_contract_address(), &client, &refund);
+            refund_by_token.set(job.token.clone(), refund);
         }
 
         // Non-default tokens: pay approved amounts to freelancer, remainder to client.
@@ -3430,6 +3682,7 @@ impl EscrowContract {
             }
             if tb_refund > 0 {
                 tc.transfer(&env.current_contract_address(), &client, &tb_refund);
+                refund_by_token.set(tb.token.clone(), tb_refund);
             }
         }
 
@@ -3437,11 +3690,28 @@ impl EscrowContract {
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        // Emit event
-        env.events().publish(
-            (symbol_short!("escrow"), symbol_short!("refund")),
-            (job_id, refund, client, job.freelancer),
-        );
+        // Emit refund event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), symbol_short!("refund")),
+                (job_id, refund_amount, client, job.freelancer),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), symbol_short!("refund")),
+                        (job_id, token_addr, refund_amount, client.clone(), job.freelancer.clone()),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -3460,7 +3730,8 @@ impl EscrowContract {
     /// * `NotAdmin`           — caller is not a registered signer
     /// * `JobNotFound`        — job does not exist
     /// * `InvalidStatus`      — job is in a terminal state (Completed, Cancelled, Expired, Created)
-    /// * `InsufficientFunds`  — amount <= 0 or amount > remaining locked balance
+    /// * `InvalidAmount`      — amount is zero or negative
+    /// * `InsufficientFunds`  — amount exceeds the remaining locked balance
     pub fn partial_refund(
         env: Env,
         caller: Address,
@@ -3501,7 +3772,11 @@ impl EscrowContract {
             .sum();
         let remaining = job.total_amount - approved_amount;
 
-        if amount <= 0 || amount > remaining {
+        if amount <= 0 {
+            return Err(EscrowError::InvalidAmount);
+        }
+
+        if amount > remaining {
             return Err(EscrowError::InsufficientFunds);
         }
 
@@ -3644,11 +3919,7 @@ impl EscrowContract {
             .get::<DataKey, RevisionProposal>(&DataKey::RevisionProposal(job_id))
         {
             if existing.status == ProposalStatus::Pending {
-                let expiry_secs: u64 = env
-                    .storage()
-                    .instance()
-                    .get(&DataKey::ProposalExpiry)
-                    .unwrap_or(DEFAULT_PROPOSAL_EXPIRY_SECS);
+                let expiry_secs = proposal_expiry_secs(&env);
                 let now = env.ledger().timestamp();
                 if now < existing.created_at + expiry_secs {
                     return Err(EscrowError::RevisionProposalAlreadyExists);
@@ -3715,7 +3986,7 @@ impl EscrowContract {
 
         // 7. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_proposed"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_proposed")),
             (job_id, caller, job.client, job.freelancer, new_total),
         );
 
@@ -3980,7 +4251,7 @@ impl EscrowContract {
 
         // 10. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_accepted"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_accepted")),
             (job_id, caller, job.client, job.freelancer, new_total, delta),
         );
 
@@ -4052,7 +4323,7 @@ impl EscrowContract {
 
         // 5. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_rejected"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_rejected")),
             (job_id, caller, job.client, job.freelancer),
         );
 
@@ -4117,7 +4388,7 @@ impl EscrowContract {
 
         // 5. Emit event
         env.events().publish(
-            (Symbol::new(&env, "revision_cancelled"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_cancelled")),
             (job_id, caller, job.client, job.freelancer),
         );
 
@@ -4169,11 +4440,7 @@ impl EscrowContract {
         }
 
         // Check if the proposal TTL has elapsed.
-        let expiry_secs: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::ProposalExpiry)
-            .unwrap_or(DEFAULT_PROPOSAL_EXPIRY_SECS);
+        let expiry_secs = proposal_expiry_secs(&env);
         let now = env.ledger().timestamp();
         if now < proposal.created_at + expiry_secs {
             return Err(EscrowError::ProposalNotExpirable);
@@ -4192,7 +4459,7 @@ impl EscrowContract {
 
         // Emit revision_expired event.
         env.events().publish(
-            (Symbol::new(&env, "revision_expired"),),
+            (symbol_short!("escrow"), Symbol::new(&env, "revision_expired")),
             (job_id, caller, proposal.proposer),
         );
 
@@ -4205,6 +4472,7 @@ impl EscrowContract {
     /// # Arguments
     /// * `job_id` — The job to query
     pub fn get_revision_proposal(env: Env, job_id: u64) -> Option<RevisionProposal> {
+        bump_escrow_ttl(&env, job_id);
         env.storage()
             .persistent()
             .get::<DataKey, RevisionProposal>(&DataKey::RevisionProposal(job_id))
@@ -4228,6 +4496,7 @@ impl EscrowContract {
     /// - Transparency for both parties to see how scope evolved
     /// - Historical record for compliance and reporting
     pub fn get_revision_history(env: Env, job_id: u64) -> Vec<MilestoneRevision> {
+        bump_escrow_ttl(&env, job_id);
         env.storage()
             .persistent()
             .get(&DataKey::RevisionHistory(job_id))
@@ -4264,6 +4533,9 @@ impl EscrowContract {
 
         // Refund remaining escrowed balance and pay approved milestones to freelancer.
         // Operates per-token for multi-token jobs.
+        // Track refunds by token for event emission.
+        let mut refund_by_token: Map<Address, i128> = Map::new(&env);
+
         let funded_state = job.status == JobStatus::Funded
             || job.status == JobStatus::InProgress
             || job.status == JobStatus::Disputed;
@@ -4283,6 +4555,7 @@ impl EscrowContract {
             }
             if default_refund > 0 {
                 default_tc.transfer(&env.current_contract_address(), &job.client, &default_refund);
+                refund_by_token.set(job.token.clone(), default_refund);
             }
 
             // Non-default tokens.
@@ -4305,19 +4578,43 @@ impl EscrowContract {
                 }
                 if tb_refund > 0 {
                     tc.transfer(&env.current_contract_address(), &job.client, &tb_refund);
+                    refund_by_token.set(tb.token.clone(), tb_refund);
                 }
             }
         }
-        let refund = default_refund; // used in event below
 
         job.status = JobStatus::Expired;
         env.storage().persistent().set(&get_job_key(job_id), &job);
         bump_job_ttl(&env, job_id);
 
-        env.events().publish(
-            (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
-            (job_id, job.client, job.freelancer, job.token, refund),
-        );
+        // Emit job_expired event: single-token or per-token for multi-token jobs.
+        let num_tokens = refund_by_token.len();
+        if num_tokens == 0 {
+            // No refund was issued (all funds were approved, or job was never funded)
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                (job_id, job.client, job.freelancer, job.token, 0_i128),
+            );
+        } else if num_tokens == 1 {
+            // Single-token job: legacy event format
+            let token_addr = refund_by_token.keys().get(0).unwrap();
+            let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+            env.events().publish(
+                (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                (job_id, job.client.clone(), job.freelancer, token_addr, refund_amount),
+            );
+        } else {
+            // Multi-token job: emit per-token events
+            for token_addr in refund_by_token.keys() {
+                let refund_amount = refund_by_token.get(token_addr.clone()).unwrap_or(0);
+                if refund_amount > 0 {
+                    env.events().publish(
+                        (symbol_short!("escrow"), Symbol::new(&env, "job_expired")),
+                        (job_id, token_addr, job.client.clone(), job.freelancer.clone(), refund_amount),
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -4512,6 +4809,12 @@ impl EscrowContract {
         env.storage()
             .persistent()
             .get(&DataKey::SubAssignment(job_id, milestone_id))
+    }
+
+    /// Return the cumulative amount paid to the freelancer for a milestone.
+    /// Returns `0` if no amount has been disbursed.
+    pub fn get_milestone_disbursed(env: Env, job_id: u64, milestone_id: u32) -> i128 {
+        get_milestone_disbursed(&env, job_id, milestone_id)
     }
 
     /// Get job details by ID.

@@ -16,10 +16,6 @@ import {
   Clock,
   CheckCircle2,
   Trash2,
-  Send,
-  XCircle,
-  Eye,
-  ChevronRight,
 } from "lucide-react";
 import axios from "axios";
 import StatusBadge from "@/components/StatusBadge";

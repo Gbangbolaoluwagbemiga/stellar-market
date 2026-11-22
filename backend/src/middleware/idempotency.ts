@@ -47,11 +47,21 @@ export function idempotency(options: { ttl?: number } = {}) {
 
       const originalJson = res.json.bind(res);
       res.json = function (body: unknown) {
-        redis
-          .setex(redisKey, ttl, JSON.stringify({ status: "completed", response: body }))
-          .catch((err) =>
-            logger.warn({ err, redisKey }, "Failed to store idempotency key"),
-          );
+        // Only cache successful responses (2xx/3xx); errors should not be cached
+        if (res.statusCode < 400) {
+          redis
+            .setex(redisKey, ttl, JSON.stringify({ status: "completed", response: body }))
+            .catch((err) =>
+              logger.warn({ err, redisKey }, "Failed to store idempotency key"),
+            );
+        } else {
+          // For error responses, delete the in-flight marker so retries can re-execute
+          redis
+            .del(redisKey)
+            .catch((err) =>
+              logger.warn({ err, redisKey }, "Failed to delete in-flight idempotency key"),
+            );
+        }
         return originalJson(body);
       };
 

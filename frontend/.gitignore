@@ -1,0 +1,6 @@
+.vercel
+
+# next-pwa generated service-worker artifacts (issue #1854)
+public/sw.js
+public/workbox-*.js
+public/worker-*.js

@@ -46,6 +46,18 @@ describe('formatFileSize', () => {
     // 1.5 MB
     expect(formatFileSize(1.5 * 1024 * 1024)).toBe('1.5 MB');
   });
+
+  it('returns 0 Bytes for negative byte counts (#1641)', () => {
+    expect(formatFileSize(-1)).toBe('0 Bytes');
+    expect(formatFileSize(-1024)).toBe('0 Bytes');
+  });
+
+  it('clamps to GB for sizes at or above 1 TB (#1641)', () => {
+    // Exactly 1 TB
+    expect(formatFileSize(1024 * 1024 * 1024 * 1024)).toBe('1024 GB');
+    // 1.5 TB
+    expect(formatFileSize(1.5 * 1024 * 1024 * 1024 * 1024)).toBe('1536 GB');
+  });
 });
 
 describe('getExtensionFromMimeType', () => {

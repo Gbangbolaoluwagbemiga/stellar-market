@@ -11,3 +11,11 @@ export const createInvitationSchema = z.object({
 export const invitationJobParamSchema = z.object({
   jobId: z.string().min(1, "Job ID is required"),
 });
+
+export const invitationIdParamSchema = z.object({
+  invitationId: z.string().min(1, "Invitation ID is required"),
+});
+
+export const invitationResponseSchema = z.object({
+  status: z.enum(["ACCEPTED", "DECLINED"]),
+});

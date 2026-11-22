@@ -50,7 +50,7 @@ export default function ServiceDetailPage() {
     );
   }
 
-  const averageRating = service.freelancer.averageRating || 0;
+  const averageRating = (service.freelancer.averageRating || 0).toFixed(1);
   const reviewCount = service.freelancer.reviewCount || 0;
 
   return (

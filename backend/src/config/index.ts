@@ -3,11 +3,17 @@ import { version } from "../../package.json";
 
 dotenv.config();
 
-const configuredPlatformMinimum = Number(process.env.PLATFORM_MIN_BUDGET_XLM || "1");
-const platformMinBudgetXlm =
-  Number.isFinite(configuredPlatformMinimum) && configuredPlatformMinimum > 0
-    ? configuredPlatformMinimum
-    : 1;
+function validatePlatformMinBudget(value: string | undefined): number {
+  const configured = value ? Number(value) : 1;
+  if (!Number.isFinite(configured) || configured <= 0) {
+    throw new Error(
+      `PLATFORM_MIN_BUDGET_XLM must be a positive number (got "${value}").`
+    );
+  }
+  return configured;
+}
+
+const platformMinBudgetXlm = validatePlatformMinBudget(process.env.PLATFORM_MIN_BUDGET_XLM);
 
 export const MAX_PAGE_SIZE = 100;
 
@@ -58,7 +64,6 @@ export const config = {
   version,
   port: process.env.PORT || 5000,
   jwtSecret: process.env.JWT_SECRET || "default-secret-change-me",
-  databaseUrl: process.env.DATABASE_URL,
   frontendUrl: process.env.FRONTEND_URL || "http://localhost:3000",
   encryptionKey,
   corsAllowedOrigins: (process.env.CORS_ALLOWED_ORIGINS || "")

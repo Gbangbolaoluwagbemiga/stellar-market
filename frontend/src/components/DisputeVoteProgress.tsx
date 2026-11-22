@@ -40,7 +40,8 @@ export default function DisputeVoteProgress({
       const currentVoteCount = dispute.votesForClient + dispute.votesForFreelancer;
       if (currentVoteCount > prevVoteCount && prevVoteCount > 0) {
         setIsNewVote(true);
-        setTimeout(() => setIsNewVote(false), 2000);
+        const timeoutId = setTimeout(() => setIsNewVote(false), 2000);
+        return () => clearTimeout(timeoutId);
       }
       setPrevVoteCount(currentVoteCount);
     }

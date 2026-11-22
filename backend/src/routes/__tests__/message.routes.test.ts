@@ -152,6 +152,75 @@ describe("POST /api/messages", () => {
   });
 });
 
+describe("GET /api/messages", () => {
+  it("filters conversation history by participant, job, sender, and receiver", async () => {
+    messageMock.findMany.mockResolvedValueOnce([]);
+    messageMock.count.mockResolvedValueOnce(0);
+
+    const res = await request(app)
+      .get(
+        `/api/messages?participantId=${USER_OTHER_ID}&jobId=job-123&senderId=${USER_TEST_ID}&receiverId=${USER_OTHER_ID}`,
+      )
+      .set(authHeader());
+
+    expect(res.status).toBe(200);
+    const where = messageMock.findMany.mock.calls[0][0].where;
+    expect(where.AND).toEqual(
+      expect.arrayContaining([
+        { jobId: "job-123" },
+        { senderId: USER_TEST_ID },
+        { receiverId: USER_OTHER_ID },
+        {
+          OR: [
+            { senderId: USER_TEST_ID, receiverId: USER_OTHER_ID },
+            { senderId: USER_OTHER_ID, receiverId: USER_TEST_ID },
+          ],
+        },
+      ]),
+    );
+    expect(messageMock.count.mock.calls[0][0].where).toEqual(where);
+  });
+
+  it("marks the participant's unread messages as read, like GET /:id", async () => {
+    messageMock.findMany.mockResolvedValueOnce([]);
+    messageMock.count.mockResolvedValueOnce(0);
+    messageMock.updateMany.mockResolvedValueOnce({ count: 2 });
+
+    const res = await request(app)
+      .get(`/api/messages?participantId=${USER_OTHER_ID}&jobId=job-123`)
+      .set(authHeader());
+
+    expect(res.status).toBe(200);
+    expect(messageMock.updateMany).toHaveBeenCalledWith({
+      where: {
+        senderId: USER_OTHER_ID,
+        receiverId: USER_TEST_ID,
+        jobId: "job-123",
+        read: false,
+      },
+      data: { read: true },
+    });
+  });
+
+  it("filters conversation lists by sender and receiver", async () => {
+    messageMock.findMany.mockResolvedValueOnce([]);
+
+    const res = await request(app)
+      .get(`/api/messages?senderId=${USER_TEST_ID}&receiverId=${USER_OTHER_ID}`)
+      .set(authHeader());
+
+    expect(res.status).toBe(200);
+    const where = messageMock.findMany.mock.calls[0][0].where;
+    expect(where.AND).toEqual(
+      expect.arrayContaining([
+        { senderId: USER_TEST_ID },
+        { receiverId: USER_OTHER_ID },
+        { OR: [{ senderId: USER_TEST_ID }, { receiverId: USER_TEST_ID }] },
+      ]),
+    );
+  });
+});
+
 // ─── GET /api/messages/unread-count ──────────────────────────────────────────
 describe("GET /api/messages/unread-count", () => {
   it("returns the unread count for the authenticated user", async () => {

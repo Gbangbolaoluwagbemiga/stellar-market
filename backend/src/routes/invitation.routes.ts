@@ -4,7 +4,12 @@ import { authenticate, AuthRequest } from "../middleware/auth";
 import { validate } from "../middleware/validation";
 import { asyncHandler } from "../middleware/error";
 import { NotificationService } from "../services/notification.service";
-import { createInvitationSchema, invitationJobParamSchema } from "../schemas";
+import {
+  createInvitationSchema,
+  invitationIdParamSchema,
+  invitationJobParamSchema,
+  invitationResponseSchema,
+} from "../schemas";
 
 const router = Router();
 /**
@@ -128,6 +133,55 @@ router.get(
     });
 
     res.json({ data: invitations, total: invitations.length });
+  }),
+);
+
+router.patch(
+  "/invitations/:invitationId/status",
+  authenticate,
+  validate({
+    params: invitationIdParamSchema,
+    body: invitationResponseSchema,
+  }),
+  asyncHandler(async (req: AuthRequest, res: Response) => {
+    const invitationId = req.params.invitationId as string;
+    const { status } = req.body as { status: "ACCEPTED" | "DECLINED" };
+
+    const invitation = await prisma.invitation.findUnique({
+      where: { id: invitationId },
+      select: {
+        freelancerId: true,
+        clientId: true,
+        status: true,
+        job: { select: { title: true } },
+      },
+    });
+    if (!invitation) {
+      return res.status(404).json({ error: "Invitation not found." });
+    }
+    if (invitation.freelancerId !== req.userId) {
+      return res
+        .status(403)
+        .json({ error: "Only the invited freelancer can respond to this invitation." });
+    }
+    if (invitation.status !== "PENDING") {
+      return res.status(400).json({ error: "This invitation has already been resolved." });
+    }
+
+    const updated = await prisma.invitation.update({
+      where: { id: invitationId },
+      data: { status },
+    });
+
+    await NotificationService.sendNotification({
+      userId: invitation.clientId,
+      type: NotificationType.JOB_INVITATION,
+      title: status === "ACCEPTED" ? "Job Invitation Accepted" : "Job Invitation Declined",
+      message: `A freelancer ${status.toLowerCase()} your invitation for: ${invitation.job.title}`,
+      metadata: { jobId: updated.jobId, invitationId: updated.id, status },
+    });
+
+    res.json(updated);
   }),
 );
 

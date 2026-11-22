@@ -95,6 +95,8 @@ enum NotificationType {
   ESCROW_TTL_WARNING
   JOB_INVITATION
   SUSPICIOUS_REPORTER_FLAGGED
+  JOB_REMOVED
+  JOB_EXPIRED
 }
 
 enum InvitationStatus {
@@ -203,7 +205,6 @@ model NotificationPreference {
   emailMilestoneApproved   Boolean @default(true)
   emailPaymentReleased     Boolean @default(true)
   emailApplicationAccepted Boolean @default(true)
-  marketingEmails          Boolean @default(true)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -255,6 +256,7 @@ model Job {
   @@index([clientId])
   @@index([freelancerId])
   @@index([paymentToken])
+  @@index([category])
   @@index([status, createdAt(sort: Desc)])
 }
 
@@ -315,9 +317,10 @@ model Application {
   createdAt         DateTime          @default(now())
 
   job        Job  @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  freelancer User @relation(fields: [freelancerId], references: [id])
+  freelancer User @relation(fields: [freelancerId], references: [id], onDelete: Cascade)
 
   @@unique([jobId, freelancerId])
+  @@index([freelancerId, createdAt(sort: Desc)])
 }
 
 model Invitation {
@@ -350,6 +353,10 @@ model Message {
   sender   User @relation("SentMessages", fields: [senderId], references: [id])
   receiver User @relation("ReceivedMessages", fields: [receiverId], references: [id])
   job      Job? @relation(fields: [jobId], references: [id])
+
+  @@index([senderId])
+  @@index([receiverId])
+  @@index([jobId])
 }
 
 model Review {
@@ -366,6 +373,8 @@ model Review {
   reviewee User @relation("ReviewsReceived", fields: [revieweeId], references: [id])
 
   @@unique([jobId, reviewerId])
+  @@index([reviewerId])
+  @@index([revieweeId])
 }
 
 model Transaction {
@@ -611,9 +620,10 @@ model Report {
 }
 
 model SyncState {
-  id                String   @id @default("default")
-  lastIndexedLedger Int      @default(0)
-  updatedAt         DateTime @updatedAt
+  id                String    @id @default("default")
+  lastIndexedLedger Int       @default(0)
+  lastEventAt       DateTime?
+  updatedAt         DateTime  @updatedAt
 }
 
 model HorizonCursor {

@@ -11,7 +11,17 @@ const prisma = new PrismaClient();
 
 const MESSAGE_SEND_LIMIT_PER_WINDOW = 60;
 const MESSAGE_SEND_WINDOW_MS = 60_000;
+const RATE_LIMIT_SWEEP_INTERVAL_MS = 5 * 60_000;
 const sendMessageRateLimits = new Map<string, { count: number; resetAt: number }>();
+
+// Entries are only ever set/mutated above, never removed, so without a sweep every
+// distinct sender who has ever messaged leaks one entry for the process lifetime.
+setInterval(() => {
+  const now = Date.now();
+  for (const [senderId, entry] of sendMessageRateLimits) {
+    if (entry.resetAt <= now) sendMessageRateLimits.delete(senderId);
+  }
+}, RATE_LIMIT_SWEEP_INTERVAL_MS);
 
 function checkSendMessageRateLimit(senderId: string): { ok: boolean; retryAfter?: number; error?: string } {
   const now = Date.now();

@@ -3598,6 +3598,60 @@ fn test_multisig_pause_flow() {
 }
 
 #[test]
+fn test_get_multisig_proposal_reads_pending_archived_and_unknown_ids() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, _, _, _, signer1, _) = setup_multisig(&env);
+    let proposal_id = contract.propose_admin_action(
+        &signer1,
+        &AdminAction::AddSigner(Address::generate(&env)),
+    );
+
+    let pending = contract
+        .get_multisig_proposal(&proposal_id)
+        .expect("Pending proposal should be returned");
+    assert_eq!(pending.id, proposal_id);
+    assert!(!pending.executed);
+
+    env.ledger()
+        .with_mut(|l| l.timestamp += PROPOSAL_TTL + 1);
+    contract.prune_expired_proposal(&proposal_id);
+
+    let archived = contract
+        .get_multisig_proposal(&proposal_id)
+        .expect("Archived proposal should be returned");
+    assert_eq!(archived.id, proposal_id);
+    assert!(!archived.executed);
+    assert!(contract.get_multisig_proposal(&999).is_none());
+}
+
+#[test]
+fn test_get_execution_not_before() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, _, _, _, signer1, _) = setup_multisig(&env);
+
+    let timelocked_id = contract.propose_admin_action(&signer1, &AdminAction::Pause);
+    assert_eq!(
+        contract.get_execution_not_before(&timelocked_id),
+        Some(1000 + MULTISIG_TIME_LOCK_SECS)
+    );
+
+    let immediate_id =
+        contract.propose_admin_action(&signer1, &AdminAction::AddSigner(Address::generate(&env)));
+    assert_eq!(
+        contract.get_execution_not_before(&immediate_id),
+        Some(1000)
+    );
+
+    assert_eq!(contract.get_execution_not_before(&999), None);
+}
+
+#[test]
 fn test_multisig_unauthorized_proposal() {
     let env = Env::default();
     env.mock_all_auths();
@@ -3710,10 +3764,12 @@ fn test_release_partial_then_full_remainder() {
 
     contract.fund_job(&job_id, &client_addr, &0, &0);
     contract.submit_milestone(&job_id, &0, &freelancer);
+    assert_eq!(contract.get_milestone_disbursed(&job_id, &0), 0);
 
     // First partial payment
     contract.release_partial_payment(&job_id, &0, &partial, &client_addr, &0);
     assert_eq!(token.balance(&freelancer), partial);
+    assert_eq!(contract.get_milestone_disbursed(&job_id, &0), partial);
 
     // Second partial payment clears the rest
     let remaining = amount - partial;
@@ -3723,6 +3779,7 @@ fn test_release_partial_then_full_remainder() {
     assert_eq!(job.milestones.get(0).unwrap().status, MilestoneStatus::Approved);
     assert_eq!(job.status, JobStatus::InProgress);
     assert_eq!(token.balance(&freelancer), amount);
+    assert_eq!(contract.get_milestone_disbursed(&job_id, &0), amount);
 }
 
 #[test]
@@ -5073,6 +5130,7 @@ fn test_partial_refund_balance_tracked_accurately() {
 }
 
 #[test]
+#[should_panic(expected = "Error(Contract, #5)")] // InsufficientFunds
 fn test_partial_refund_fails_over_refund() {
     let env = Env::default();
     env.mock_all_auths();
@@ -5098,8 +5156,36 @@ fn test_partial_refund_fails_over_refund() {
     contract.fund_job(&job_id, &client_addr, &0, &0);
 
     // No milestones approved, remaining = 500. Attempt to refund 600 > 500 → should fail.
-    let result = contract.try_partial_refund(&admin, &job_id, &600, &0);
-    assert!(result.is_err());
+    contract.partial_refund(&admin, &job_id, &600, &0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #24)")] // InvalidAmount
+fn test_partial_refund_fails_non_positive_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (contract, client_addr, freelancer, token, admin) = setup_test(&env);
+
+    let milestones = vec![
+        &env,
+        (String::from_str(&env, "M1"), 500_i128, JOB_DEADLINE),
+    ];
+
+    let job_id = contract.create_job(
+        &client_addr,
+        &freelancer,
+        &token,
+        &milestones,
+        &JOB_DEADLINE,
+        &GRACE_PERIOD,
+        &DEFAULT_EXPIRY_LEDGER,
+    );
+
+    contract.fund_job(&job_id, &client_addr, &0, &0);
+
+    contract.partial_refund(&admin, &job_id, &0, &0);
 }
 
 #[test]
@@ -8035,6 +8121,41 @@ fn test_emergency_withdraw_all_deferred_approved_all_to_freelancer() {
 // Expected: freelancer gets 0 extra (already received 200), recipient gets 300.
 // -----------------------------------------------------------------
 #[test]
+fn test_inactivity_timestamp_getters_follow_storage_lifecycle() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+
+    let (escrow, client_addr, freelancer, _token_addr, _admin, job_id) =
+        setup_emergency_withdraw_job(&env);
+
+    assert_eq!(escrow.get_milestone_submitted_at(&job_id, &0), None);
+    assert_eq!(escrow.get_inactivity_auto_approve_at(&job_id, &0), None);
+
+    escrow.submit_milestone(&job_id, &0, &freelancer);
+    assert_eq!(escrow.get_milestone_submitted_at(&job_id, &0), Some(1000));
+    assert_eq!(escrow.get_inactivity_auto_approve_at(&job_id, &0), None);
+
+    let trigger_time = 1000 + INACTIVITY_THRESHOLD_SECS + 1;
+    env.ledger().with_mut(|l| l.timestamp = trigger_time);
+    let auto_approve_at = trigger_time + INACTIVITY_GRACE_SECS;
+    escrow.trigger_inactivity_extension(&job_id, &0, &freelancer);
+
+    assert_eq!(
+        escrow.get_milestone_submitted_at(&job_id, &0),
+        Some(1000)
+    );
+    assert_eq!(
+        escrow.get_inactivity_auto_approve_at(&job_id, &0),
+        Some(auto_approve_at)
+    );
+
+    escrow.approve_milestone(&job_id, &0, &client_addr);
+    assert_eq!(escrow.get_milestone_submitted_at(&job_id, &0), None);
+    assert_eq!(escrow.get_inactivity_auto_approve_at(&job_id, &0), None);
+}
+
+#[test]
 fn test_emergency_withdraw_no_double_pay_after_inactivity_approval() {
     let env = Env::default();
     env.mock_all_auths();
@@ -8308,6 +8429,28 @@ fn test_set_price_oracle_overwrites_previous_value() {
 
     contract.set_price_oracle(&admin, &oracle_second);
     assert_eq!(contract.get_price_oracle(), Some(oracle_second));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn test_set_price_oracle_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract, _client, _freelancer, _token, admin) = setup_test(&env);
+
+    pause_escrow(&env, &contract, &admin);
+    contract.set_price_oracle(&admin, &Address::generate(&env));
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #15)")]
+fn test_set_dispute_contract_when_paused() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract, _client, _freelancer, _token, admin) = setup_test(&env);
+
+    pause_escrow(&env, &contract, &admin);
+    contract.set_dispute_contract(&admin, &Address::generate(&env));
 }
 
 // ============================================================
@@ -8781,4 +8924,39 @@ fn test_bump_escrow_unknown_job_rejected() {
 
     let res = contract.try_bump_escrow(&999u64);
     assert_eq!(res, Err(Ok(EscrowError::JobNotFound)));
+}
+
+// ─── Public config getters: max milestones and proposal expiry ───────────────
+
+#[test]
+fn test_get_max_milestones_returns_contract_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract, _client, _freelancer, _token, _admin) = setup_test(&env);
+
+    assert_eq!(contract.get_max_milestones(), MAX_MILESTONES);
+}
+
+#[test]
+fn test_get_proposal_expiry_returns_value_set_at_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, EscrowContract);
+    let client = EscrowContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let treasury = Address::generate(&env);
+
+    client.initialize(&vec![&env, admin.clone()], &1, &treasury, &0, &86_400);
+
+    assert_eq!(client.get_proposal_expiry(), 86_400);
+}
+
+#[test]
+fn test_get_proposal_expiry_matches_default_when_configured_at_seven_days() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (contract, _client, _freelancer, _token, _admin) = setup_test(&env);
+
+    // setup_test initializes with 604800 seconds, which equals DEFAULT_PROPOSAL_EXPIRY_SECS.
+    assert_eq!(contract.get_proposal_expiry(), DEFAULT_PROPOSAL_EXPIRY_SECS);
 }

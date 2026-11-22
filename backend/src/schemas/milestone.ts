@@ -14,7 +14,6 @@ export const updateMilestoneSchema = z.object({
   description: z.string().min(10, 'Description must be at least 10 characters long').max(2000, 'Description must be less than 2000 characters').optional(),
   amount: z.number().positive('Amount must be a positive number').optional(),
   dueDate: z.string().datetime('Invalid due date format').optional(),
-  status: milestoneStatusSchema.optional(),
 });
 
 export const updateMilestoneStatusSchema = z.object({
@@ -28,4 +27,13 @@ export const getMilestonesQuerySchema = paginationSchema.extend({
 
 export const getMilestoneByIdParamSchema = z.object({
   id: z.string().min(1, "ID is required"),
+});
+
+export const deliverableParamSchema = z.object({
+  id: z.string().min(1, "ID is required"),
+});
+
+export const deliverableDeleteParamSchema = z.object({
+  id: z.string().min(1, "ID is required"),
+  attachmentId: z.string().min(1, "Attachment ID is required"),
 });

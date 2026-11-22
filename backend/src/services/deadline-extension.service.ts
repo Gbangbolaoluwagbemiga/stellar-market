@@ -57,6 +57,15 @@ export class DeadlineExtensionService {
       );
     }
 
+    // Milestones that are already approved/paid out are no longer actionable,
+    // so an extension for them would only create a meaningless on-chain attempt
+    if (milestone.status === "APPROVED" || milestone.status === "PARTIALLY_PAID") {
+      throw createError(
+        `Cannot request a deadline extension for a milestone with status: ${milestone.status}`,
+        400,
+      );
+    }
+
     // Validate new deadline is in the future
     if (newDeadline <= new Date()) {
       throw createError("New deadline must be in the future", 400);
@@ -383,6 +392,13 @@ export class DeadlineExtensionService {
       throw createError(
         "Only job participants can confirm extension transactions",
         403,
+      );
+    }
+
+    if (extensionRequest.status !== "APPROVED_BY_BOTH") {
+      throw createError(
+        `Cannot confirm a transaction for an extension request with status: ${extensionRequest.status}`,
+        400,
       );
     }
 

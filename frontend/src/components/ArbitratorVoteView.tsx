@@ -136,7 +136,7 @@ export default function ArbitratorVoteView({
               Votes for Client
             </p>
             <p className="text-2xl font-bold text-theme-heading">
-              {dispute.votesForClient}
+              {liveDispute.votesForClient}
             </p>
           </div>
           <div className="bg-theme-card border border-theme-border rounded-lg p-3 text-center">
@@ -144,7 +144,7 @@ export default function ArbitratorVoteView({
               Votes for Freelancer
             </p>
             <p className="text-2xl font-bold text-theme-heading">
-              {dispute.votesForFreelancer}
+              {liveDispute.votesForFreelancer}
             </p>
           </div>
         </div>

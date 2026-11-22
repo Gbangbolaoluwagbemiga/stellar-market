@@ -849,7 +849,7 @@ router.get(
               tx.tokenAddress,
               tx.fromAddress,
               tx.toAddress,
-              `"${tx.job!.title.replace(/"/g, '""')}"`,
+              tx.job ? `"${tx.job.title.replace(/"/g, '""')}"` : "",
               tx.milestone ? `"${tx.milestone.title.replace(/"/g, '""')}"` : "",
               tx.txHash,
             ].join(",");
@@ -898,70 +898,54 @@ router.get(
 
       const walletAddress = user.walletAddress ?? "";
 
-      // Get transactions grouped by token
-      const transactionsByToken = await prisma.transaction.groupBy({
-        by: ["tokenAddress"],
-        where: {
-          OR: [
-            { fromAddress: walletAddress },
-            { toAddress: walletAddress },
-          ],
-        },
-        _sum: {
-          amount: true,
-        },
-        _count: {
-          tokenAddress: true,
-        },
+      const groupedRows = await prisma.$queryRaw<
+        Array<{
+          token_address: string | null;
+          total_transactions: number;
+          total_volume: number | null;
+          incoming_amount: number | null;
+          incoming_count: number;
+          outgoing_amount: number | null;
+          outgoing_count: number;
+        }>
+      >`
+        SELECT
+          "tokenAddress" as token_address,
+          COUNT(*)::int as total_transactions,
+          SUM(amount)::float as total_volume,
+          COALESCE(SUM(CASE WHEN "toAddress" = ${walletAddress} THEN amount END), 0)::float as incoming_amount,
+          COUNT(CASE WHEN "toAddress" = ${walletAddress} THEN 1 END)::int as incoming_count,
+          COALESCE(SUM(CASE WHEN "fromAddress" = ${walletAddress} THEN amount END), 0)::float as outgoing_amount,
+          COUNT(CASE WHEN "fromAddress" = ${walletAddress} THEN 1 END)::int as outgoing_count
+        FROM "Transaction"
+        WHERE "fromAddress" = ${walletAddress} OR "toAddress" = ${walletAddress}
+        GROUP BY "tokenAddress"
+      `;
+
+      const tokenDetails = groupedRows.map((row) => {
+        const incomingAmount = row.incoming_amount ?? 0;
+        const outgoingAmount = row.outgoing_amount ?? 0;
+
+        return {
+          tokenAddress: row.token_address,
+          totalTransactions: row.total_transactions,
+          totalVolume: row.total_volume ?? 0,
+          incoming: {
+            amount: incomingAmount,
+            count: row.incoming_count,
+          },
+          outgoing: {
+            amount: outgoingAmount,
+            count: row.outgoing_count,
+          },
+          netBalance: incomingAmount - outgoingAmount,
+        };
       });
-
-      // Get detailed breakdown for each token
-      const tokenDetails = await Promise.all(
-        transactionsByToken.map(async (tokenGroup) => {
-          const [incoming, outgoing] = await Promise.all([
-            prisma.transaction.aggregate({
-              where: {
-                tokenAddress: tokenGroup.tokenAddress,
-                toAddress: walletAddress,
-              },
-              _sum: { amount: true },
-              _count: true,
-            }),
-            prisma.transaction.aggregate({
-              where: {
-                tokenAddress: tokenGroup.tokenAddress,
-                fromAddress: walletAddress,
-              },
-              _sum: { amount: true },
-              _count: true,
-            }),
-          ]);
-
-          const countField = tokenGroup._count.tokenAddress;
-          const incomingSum = incoming._sum?.amount ?? 0;
-          const outgoingSum = outgoing._sum?.amount ?? 0;
-
-          return {
-            tokenAddress: tokenGroup.tokenAddress,
-            totalTransactions: countField,
-            totalVolume: tokenGroup._sum?.amount ?? 0,
-            incoming: {
-              amount: incomingSum,
-              count: incoming._count,
-            },
-            outgoing: {
-              amount: outgoingSum,
-              count: outgoing._count,
-            },
-            netBalance: incomingSum - outgoingSum,
-          };
-        }),
-      );
 
       res.json({
         tokens: tokenDetails,
         summary: {
-          uniqueTokens: transactionsByToken.length,
+          uniqueTokens: tokenDetails.length,
           totalTransactions: tokenDetails.reduce(
             (sum, t) => sum + t.totalTransactions,
             0,

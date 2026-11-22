@@ -730,11 +730,12 @@ export class DisputeService {
     });
 
     // Update job status
+    const isClientFavor = outcome === "CLIENT" || outcome === "ResolvedForClient";
     await prisma.job.update({
       where: { id: dispute.jobId },
       data: {
-        status: JobStatus.COMPLETED,
-        escrowStatus: "COMPLETED",
+        status: isClientFavor ? JobStatus.CANCELLED : JobStatus.COMPLETED,
+        escrowStatus: isClientFavor ? "CANCELLED" : "COMPLETED",
       },
     });
 

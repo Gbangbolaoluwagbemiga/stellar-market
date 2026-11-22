@@ -190,6 +190,11 @@ app.use("/admin/queues", requireAdmin, bullBoardAdapter.getRouter());
 app.use("/api/v1/jobs", writeRateLimiter);
 app.use("/api/v1/reviews", writeRateLimiter);
 app.use("/api/v1/disputes", writeRateLimiter);
+app.use("/api/v1/transactions", writeRateLimiter);
+// Admin exposes mutating endpoints (suspend user, delete job, override dispute,
+// review fraud flag, cache invalidation) so it must be throttled like every
+// other write path. GET/HEAD/OPTIONS are skipped by the limiter itself.
+app.use("/api/v1/admin", writeRateLimiter);
 
 // Global rate limiting (skip auth routes already limited)
 app.use("/api/v1", globalRateLimiter);
