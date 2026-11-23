@@ -1,6 +1,6 @@
 import { Router, Response } from "express";
 import { PrismaClient, EscrowStatus, NotificationType } from "@prisma/client";
-import { authenticate, AuthRequest } from "../middleware/auth";
+import { authenticate, requireAdmin, AuthRequest } from "../middleware/auth";
 import { walletSourceGuard } from "../middleware/wallet-guard";
 import { asyncHandler } from "../middleware/error";
 import { idempotency } from "../middleware/idempotency";
@@ -194,10 +194,16 @@ router.get("/:jobId/rate-snapshot", authenticate, asyncHandler(async (req: AuthR
   const jobId = req.params.jobId as string;
   const job = await prisma.job.findUnique({
     where: { id: jobId },
-    select: { contractJobId: true },
+    select: { contractJobId: true, clientId: true, freelancerId: true },
   });
 
-  if (!job || !job.contractJobId) {
+  if (!job) {
+    return res.status(404).json({ error: "On-chain job not found." });
+  }
+  if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+    return res.status(403).json({ error: "Only the client or freelancer may view this job." });
+  }
+  if (!job.contractJobId) {
     return res.status(404).json({ error: "On-chain job not found." });
   }
 
@@ -754,7 +760,7 @@ router.post("/confirm-tx", authenticate, idempotency(), asyncHandler(async (req:
  */
 router.get(
   "/indexer/cursor",
-  authenticate,
+  requireAdmin,
   asyncHandler(async (_req: AuthRequest, res: Response) => {
     res.json(indexerCursorState);
   }),
@@ -762,7 +768,7 @@ router.get(
 
 router.put(
   "/indexer/cursor",
-  authenticate,
+  requireAdmin,
   asyncHandler(async (req: AuthRequest, res: Response) => {
     const cursor = typeof req.body?.cursor === "string" ? req.body.cursor.trim() : "";
     if (!cursor) {
@@ -781,10 +787,16 @@ router.get(
     const jobId = req.params.jobId as string;
     const job = await prisma.job.findUnique({
       where: { id: jobId },
-      select: { contractJobId: true },
+      select: { contractJobId: true, clientId: true, freelancerId: true },
     });
 
-    if (!job || !job.contractJobId) {
+    if (!job) {
+      return res.status(404).json({ error: "Job or escrow not found." });
+    }
+    if (job.clientId !== req.userId && job.freelancerId !== req.userId) {
+      return res.status(403).json({ error: "Only the client or freelancer may view this job." });
+    }
+    if (!job.contractJobId) {
       return res.status(404).json({ error: "Job or escrow not found." });
     }
 
