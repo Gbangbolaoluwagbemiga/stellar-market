@@ -115,6 +115,10 @@ router.post("/init-fund", authenticate, walletSourceGuard, asyncHandler(async (r
     return res.status(404).json({ error: "On-chain job not found. Create it first." });
   }
 
+  if (job.clientId !== req.userId) {
+    return res.status(403).json({ error: "Only the client can fund this job." });
+  }
+
   // Derive the agreed job value (in XLM stroops) from the job's budget so the
   // contract can validate the deposit against the DEX TWAP. A native-XLM job, or
   // an explicit opt-out, passes 0 to bypass the oracle check.
@@ -229,6 +233,10 @@ router.post("/init-approve", authenticate, walletSourceGuard, asyncHandler(async
 
   if (!milestone || !milestone.job.contractJobId || milestone.onChainIndex === null) {
     return res.status(404).json({ error: "On-chain milestone not found." });
+  }
+
+  if (milestone.job.clientId !== req.userId) {
+    return res.status(403).json({ error: "Only the client can approve milestones." });
   }
 
   const xdr = await ContractService.buildApproveMilestoneTx(

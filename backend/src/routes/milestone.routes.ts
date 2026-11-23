@@ -303,7 +303,7 @@ router.delete(
 
 // Update milestone status
 router.patch(
-  "/:id/status",
+  "/milestones/:id/status",
   authenticate,
   validate({
     params: getMilestoneByIdParamSchema,

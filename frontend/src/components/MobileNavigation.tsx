@@ -3,16 +3,22 @@
 import Link from "next/link";
 import { Briefcase, LayoutDashboard, ShieldCheck, User } from "lucide-react";
 import { usePathname } from "next/navigation";
+import { useAuth } from "@/context/AuthContext";
 
-const navigationItems = [
+const staticNavigationItems = [
   { href: "/dashboard", icon: LayoutDashboard, label: "Dashboard" },
   { href: "/jobs", icon: Briefcase, label: "Jobs" },
   { href: "/disputes", icon: ShieldCheck, label: "Disputes" },
-  { href: "/profile", icon: User, label: "Profile" },
 ];
 
 export default function MobileNavigation() {
   const pathname = usePathname();
+  const { user } = useAuth();
+
+  const navigationItems = [
+    ...staticNavigationItems,
+    ...(user ? [{ href: `/profile/${user.id}`, icon: User, label: "Profile" }] : []),
+  ];
 
   return (
     <nav
