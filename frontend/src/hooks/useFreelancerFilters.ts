@@ -113,6 +113,7 @@ export function useFreelancerFilters() {
   );
 
   const clearAll = useCallback(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
     setFilters(DEFAULTS);
     setDebouncedSearch("");
     router.push(pathname, { scroll: false });
