@@ -139,10 +139,27 @@ describe("GET /api/escrow/:jobId/ttl", () => {
     expect(res.body).toEqual({ error: "Job or escrow not found." });
   });
 
+  it("returns 403 if the caller is not a job participant", async () => {
+    jobMock.findUnique.mockResolvedValueOnce({
+      id: JOB_ID,
+      contractJobId: "1",
+      clientId: "00000000-0000-4000-8000-000000000002",
+      freelancerId: "00000000-0000-4000-8000-000000000003",
+    });
+
+    const res = await request(app)
+      .get(`/api/escrow/${JOB_ID}/ttl`)
+      .set(authHeader());
+
+    expect(res.status).toBe(403);
+    expect(ContractService.getEscrowTtl).not.toHaveBeenCalled();
+  });
+
   it("returns 404 if the escrow is not found on-chain", async () => {
     jobMock.findUnique.mockResolvedValueOnce({
       id: JOB_ID,
       contractJobId: "1",
+      clientId: CLIENT_ID,
     });
     (ContractService.getEscrowTtl as jest.Mock).mockResolvedValueOnce(null);
 
@@ -158,6 +175,7 @@ describe("GET /api/escrow/:jobId/ttl", () => {
     jobMock.findUnique.mockResolvedValueOnce({
       id: JOB_ID,
       contractJobId: "1",
+      clientId: CLIENT_ID,
     });
     const ttlData = { currentLedger: 100, expiryLedger: 2000, daysRemaining: 1.1 };
     (ContractService.getEscrowTtl as jest.Mock).mockResolvedValueOnce(ttlData);
