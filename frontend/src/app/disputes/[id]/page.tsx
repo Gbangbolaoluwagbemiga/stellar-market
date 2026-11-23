@@ -209,7 +209,7 @@ function DisputeDetailContent() {
       )}
 
       <div className="mb-6">
-        <DisputeOutcomeBanner status={dispute.status} />
+        <DisputeOutcomeBanner status={dispute.status} outcome={dispute.outcome} />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">

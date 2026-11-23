@@ -245,7 +245,8 @@ export interface Dispute {
   initiatorId: string;
   respondentId: string;
   reason: string;
-  status: "OPEN" | "VOTING" | "RESOLVED_CLIENT" | "RESOLVED_FREELANCER" | "ESCALATED";
+  status: "OPEN" | "IN_PROGRESS" | "RESOLVED" | string;
+  outcome?: "CLIENT" | "FREELANCER" | "SPLIT" | string | null;
   votesForClient: number;
   votesForFreelancer: number;
   minVotes: number;
