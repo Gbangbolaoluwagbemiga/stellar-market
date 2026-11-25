@@ -163,7 +163,7 @@ router.get(
 
 // Get all applications with filtering
 router.get(
-  "/",
+  "/applications",
   authenticate,
   validate({ query: getApplicationsQuerySchema }),
   asyncHandler(async (req: AuthRequest, res: Response) => {
